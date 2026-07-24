@@ -70,18 +70,34 @@ target_compile_options(sqlite_shell_obj PRIVATE
 )
 
 # ---------------------------------------------------------------------------
-# Our added functions: DMPHON() and EMBEDDING_SIM()/EMBEDDING_DIST()
+# libllama (MacPorts llama.cpp package) — used by EMBED() to run GGUF
+# embedding models. `port install llama.cpp` provides libllama.dylib +
+# llama.h under /opt/local; find it explicitly since it's not on the
+# default CMake search path on macOS.
+# ---------------------------------------------------------------------------
+find_library(LLAMA_LIBRARY NAMES llama PATHS /opt/local/lib)
+find_path(LLAMA_INCLUDE_DIR NAMES llama.h PATHS /opt/local/include)
+if(NOT LLAMA_LIBRARY OR NOT LLAMA_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "libllama not found. On macOS: 'sudo port install llama.cpp'. "
+        "EMBED() requires libllama; DMPHON/EMBEDDING_SIM/EMBEDDING_DIST do not.")
+endif()
+message(STATUS "libllama: ${LLAMA_LIBRARY} (headers: ${LLAMA_INCLUDE_DIR})")
+
+# ---------------------------------------------------------------------------
+# Our added functions: DMPHON(), EMBEDDING_SIM()/EMBEDDING_DIST(), EMBED()
 # ---------------------------------------------------------------------------
 add_library(semext STATIC
     src/ext_functions.c
     src/double_metaphone.cpp
     src/double_metaphone_capi.cpp
+    src/embed.c
 )
 target_include_directories(semext PUBLIC
     "${CMAKE_SOURCE_DIR}/include"
 )
-target_include_directories(semext PRIVATE "${SQLITE_VENDOR_DIR}")
-target_link_libraries(semext PUBLIC sqlite3_amalgamation)
+target_include_directories(semext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}")
+target_link_libraries(semext PUBLIC sqlite3_amalgamation "${LLAMA_LIBRARY}")
 
 # ---------------------------------------------------------------------------
 # sqlite-ext executable: our tiny main() pre-registers semext's functions
