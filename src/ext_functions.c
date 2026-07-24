@@ -120,8 +120,9 @@ static int cosine_similarity(sqlite3_value *v1, sqlite3_value *v2, double *out) 
 /* ------------------------------------------------------------------ */
 /* DMPHON(text [, mode])                                                */
 /*   mode 0 (default): all words, both codes, space-separated          */
-/*   mode 1: primary code(s) only                                      */
-/*   mode 2: secondary code(s) only (NULL if none exist)               */
+/*   mode 1: first code per word (primary — always present)            */
+/*   mode 2: last code per word (alternate if it exists, else primary — */
+/*           always present; only NULL/empty for non-alphabetic input) */
 /* ------------------------------------------------------------------ */
 static void dmphon_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
@@ -136,8 +137,7 @@ static void dmphon_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 
     char *result = semext_phonize_mode(text, mode);
     if (!result) {
-        if (mode == 2) sqlite3_result_null(ctx);
-        else sqlite3_result_text(ctx, "", 0, SQLITE_STATIC);
+        sqlite3_result_text(ctx, "", 0, SQLITE_STATIC);
         return;
     }
     sqlite3_result_text(ctx, result, -1, SQLITE_TRANSIENT);

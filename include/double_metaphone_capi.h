@@ -9,11 +9,11 @@ extern "C" {
 
 // Phonize `text` per `mode`:
 //   0 = all words, both codes (primary + alternate when they differ)
-//   1 = primary code(s) only
-//   2 = secondary code(s) only
+//   1 = first code per word (the primary — always present)
+//   2 = last code per word (the alternate when one exists, else the
+//       primary — always present, never NULL for alphabetic input)
 // Returns a malloc'd, space-joined string (caller must semext_free() it),
-// or NULL if the result would be empty (e.g. mode 2 with no alternates,
-// or non-alphabetic input).
+// or NULL only for non-alphabetic/empty input.
 char *semext_phonize_mode(const char *text, int mode);
 
 // Free a string returned by semext_phonize_mode().

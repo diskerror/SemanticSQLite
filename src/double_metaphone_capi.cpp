@@ -28,9 +28,9 @@ std::string phonize_mode(const char *text, int mode) {
                 picked += codes[i];
             }
         } else if (mode == 1) {
-            picked = codes[0];
+            picked = codes.front();  // first code — always exists
         } else if (mode == 2) {
-            picked = (codes.size() > 1) ? codes[1] : std::string();
+            picked = codes.back();  // last code — same as front() when only one exists
         }
         if (!picked.empty()) {
             if (!out.empty()) out += ' ';
