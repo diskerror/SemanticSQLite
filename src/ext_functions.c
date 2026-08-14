@@ -6,9 +6,10 @@
 //   EMBEDDING_SIM(blob, blob)    — cosine similarity  (1.0 = identical direction)
 //   EMBEDDING_DIST(blob, blob)   — cosine distance     (0.0 = identical direction)
 //
-// Embedding blobs are self-describing: f16 when byte_count == dim*2,
-// f32 when byte_count == dim*4 (disambiguated via common embedding
-// dimensions — see decode_blob()). Both blobs must have equal dimension.
+// Embedding blobs are decoded using the semext_config settings:
+//   embedding_vector_type — "f16" (default), "f32", "bf16", or "int8"
+//   embedding_offset      — byte offset into the blob where the vector payload
+//                            starts (default 0; set to skip past any header)
 
 #include "double_metaphone_capi.h"
 
@@ -20,7 +21,62 @@
 #include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
-/* f16 -> f32 decode (portable, no compiler _Float16 dependency)       */
+/* Config helpers (same semext_config table that embed.c manages)       */
+/* ------------------------------------------------------------------ */
+static char *ext_config_get(sqlite3 *db, const char *key) {
+    sqlite3_stmt *stmt = NULL;
+    char *result = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT value FROM semext_config WHERE key = ?",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        return NULL;
+    }
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *v = (const char *)sqlite3_column_text(stmt, 0);
+        if (v) {
+            size_t len = strlen(v);
+            result = (char *)malloc(len + 1);
+            if (result) memcpy(result, v, len + 1);
+        }
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* Vector type identifiers (stable values, match Ragger convention)    */
+/* ------------------------------------------------------------------ */
+enum vec_type { VT_F32 = 0, VT_F16 = 1, VT_BF16 = 2, VT_INT8 = 3 };
+
+// Case-insensitive parse; returns VT_F16 for unrecognized strings.
+static enum vec_type parse_vec_type(const char *s) {
+    if (!s || s[0] == '\0') return VT_F16;
+    // lowercase first char for fast dispatch
+    char c0 = (s[0] >= 'A' && s[0] <= 'Z') ? (char)(s[0] - 'A' + 'a') : s[0];
+    if (c0 == 'f') {
+        if (s[1] == '3' && s[2] == '2') return VT_F32;
+        if (s[1] == '1' && s[2] == '6') return VT_F16;
+        return VT_F16;
+    }
+    if (c0 == 'b' || c0 == 'B') return VT_BF16;  // bf16 / bfloat16
+    if (c0 == 'i' || c0 == 'q') return VT_INT8;  // int8 / i8 / q8
+    return VT_F16;
+}
+
+// Bytes per element (payload only, not counting any per-vector scale).
+static int vec_type_stride(enum vec_type t) {
+    switch (t) {
+        case VT_F32:  return 4;
+        case VT_F16:  return 2;
+        case VT_BF16: return 2;
+        case VT_INT8: return 1;
+    }
+    return 2;
+}
+
+/* ------------------------------------------------------------------ */
+/* Scalar decode helpers (portable C, no compiler _Float16 dependency) */
 /* ------------------------------------------------------------------ */
 static float f16_to_f32(uint16_t bits) {
     uint32_t sign = (uint32_t)(bits >> 15) & 0x1u;
@@ -46,59 +102,126 @@ static float f16_to_f32(uint16_t bits) {
     return result;
 }
 
-// Decode an embedding blob (f16 or f32) into a malloc'd float array.
-// *out_dims receives the element count; caller frees the returned pointer.
-// Disambiguates f16 vs f32 by preferring whichever byte-count maps to a
-// common embedding dimension (384/512/768/1024/1536/2048/4096); falls back
-// to treating a %4==0 byte count as f32.
-static float *decode_blob(const void *data, int bytes, int *out_dims) {
+static float bf16_to_f32(uint16_t bits) {
+    uint32_t x = (uint32_t)bits << 16;
+    float result;
+    memcpy(&result, &x, sizeof(result));
+    return result;
+}
+
+// Read a little-endian uint16 from an arbitrary byte pointer (may be
+// unaligned — int8 payloads followed by 2-byte scale, for example).
+static uint16_t get_u16le(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+/* ------------------------------------------------------------------ */
+/* decode_blob — turn an embedding BLOB into a malloc'd float array    */
+/*                                                                     */
+/* vtype      — data type (VT_F16/VT_F32/VT_BF16/VT_INT8)            */
+/* offset     — bytes to skip at the start of the blob (header)        */
+/* data/bytes — the raw blob as SQLite gave it                         */
+/* *out_dims  — receives the element count; caller frees the return    */
+/*                                                                     */
+/* For VT_INT8, the last 2 payload bytes are the dequantization scale  */
+/* stored as IEEE f16 (giving out_dims = (payload - 2) / 1). If the    */
+/* blob doesn't contain a scale suffix (i.e. payload bytes == dims),   */
+/* a fallback scale of 1.0/127 is used (treats the raw int8 values as  */
+/* if max|x| was 1.0, which is correct for unit-norm vectors).         */
+/* ------------------------------------------------------------------ */
+static float *decode_blob(enum vec_type vtype, int offset,
+                          const void *data, int bytes, int *out_dims) {
     *out_dims = 0;
-    if (!data || bytes <= 0) return NULL;
+    if (!data || bytes <= offset || offset < 0) return NULL;
 
-    int dims_f16 = (bytes % 2 == 0) ? bytes / 2 : -1;
-    int dims_f32 = (bytes % 4 == 0) ? bytes / 4 : -1;
+    const uint8_t *payload = (const uint8_t *)data + offset;
+    int payload_bytes = bytes - offset;
+    int stride = vec_type_stride(vtype);
 
-    int common[] = {384, 512, 768, 1024, 1536, 2048, 3072, 4096};
-    int n_common = (int)(sizeof(common) / sizeof(common[0]));
-    int f16_common = 0, f32_common = 0;
-    for (int i = 0; i < n_common; i++) {
-        if (dims_f16 == common[i]) f16_common = 1;
-        if (dims_f32 == common[i]) f32_common = 1;
-    }
-
-    int use_f16;
-    if (f16_common && !f32_common) use_f16 = 1;
-    else if (f32_common && !f16_common) use_f16 = 0;
-    else if (dims_f32 >= 0) use_f16 = 0;   /* ambiguous/unknown: prefer f32 */
-    else if (dims_f16 >= 0) use_f16 = 1;
-    else return NULL;
-
-    if (use_f16) {
-        float *out = (float *)malloc(sizeof(float) * (size_t)dims_f16);
+    if (vtype == VT_INT8) {
+        // INT8 payload: N bytes of quantized data + optional 2-byte f16 scale.
+        // Detect by checking if (payload_bytes - 2) is a plausible dim count
+        // (>= 16 and leaves no remainder).
+        int dims_with_scale = payload_bytes - 2;
+        int dims_without    = payload_bytes;
+        int dims;
+        float scale;
+        if (dims_with_scale >= 16) {
+            dims = dims_with_scale;
+            scale = f16_to_f32(get_u16le(payload + dims));
+            if (scale <= 0.0f || !isfinite(scale)) scale = 1.0f / 127.0f;
+        } else if (dims_without >= 16) {
+            dims = dims_without;
+            scale = 1.0f / 127.0f;  // unit-norm fallback
+        } else {
+            return NULL;
+        }
+        float *out = (float *)malloc(sizeof(float) * (size_t)dims);
         if (!out) return NULL;
-        const uint16_t *h = (const uint16_t *)data;
-        for (int i = 0; i < dims_f16; i++) out[i] = f16_to_f32(h[i]);
-        *out_dims = dims_f16;
-        return out;
-    } else {
-        float *out = (float *)malloc(sizeof(float) * (size_t)dims_f32);
-        if (!out) return NULL;
-        memcpy(out, data, sizeof(float) * (size_t)dims_f32);
-        *out_dims = dims_f32;
+        for (int i = 0; i < dims; i++) {
+            out[i] = (float)((int8_t)payload[i]) * scale;
+        }
+        *out_dims = dims;
         return out;
     }
+
+    // f32 / f16 / bf16: uniform stride, no trailing metadata.
+    if (payload_bytes % stride != 0) return NULL;
+    int dims = payload_bytes / stride;
+    if (dims < 1) return NULL;
+
+    float *out = (float *)malloc(sizeof(float) * (size_t)dims);
+    if (!out) return NULL;
+
+    switch (vtype) {
+        case VT_F32:
+            memcpy(out, payload, sizeof(float) * (size_t)dims);
+            break;
+        case VT_F16:
+            for (int i = 0; i < dims; i++)
+                out[i] = f16_to_f32(get_u16le(payload + i * 2));
+            break;
+        case VT_BF16:
+            for (int i = 0; i < dims; i++)
+                out[i] = bf16_to_f32(get_u16le(payload + i * 2));
+            break;
+        default:
+            free(out);
+            return NULL;
+    }
+    *out_dims = dims;
+    return out;
+}
+
+// Read vtype + offset from semext_config (caches nothing — called per
+// EMBEDDING_SIM/DIST invocation, but config reads are fast for a CLI tool).
+static void read_embed_config(sqlite3 *db, enum vec_type *vt, int *offset) {
+    *vt = VT_F16;
+    *offset = 0;
+    char *vtype_str  = ext_config_get(db, "embedding_vector_type");
+    char *offset_str = ext_config_get(db, "embedding_offset");
+    if (vtype_str)  { *vt = parse_vec_type(vtype_str); free(vtype_str); }
+    if (offset_str) { *offset = atoi(offset_str); free(offset_str); }
 }
 
 // Shared cosine-similarity computation. Returns 0 on success, -1 on error
 // (NULL/non-blob input, dimension mismatch, or zero vector).
-static int cosine_similarity(sqlite3_value *v1, sqlite3_value *v2, double *out) {
+static int cosine_similarity(sqlite3 *db,
+                             sqlite3_value *v1, sqlite3_value *v2,
+                             double *out) {
     if (sqlite3_value_type(v1) != SQLITE_BLOB ||
         sqlite3_value_type(v2) != SQLITE_BLOB) {
         return -1;
     }
+    enum vec_type vt;
+    int offset;
+    read_embed_config(db, &vt, &offset);
+
     int d1 = 0, d2 = 0;
-    float *a = decode_blob(sqlite3_value_blob(v1), sqlite3_value_bytes(v1), &d1);
-    float *b = decode_blob(sqlite3_value_blob(v2), sqlite3_value_bytes(v2), &d2);
+    float *a = decode_blob(vt, offset,
+                           sqlite3_value_blob(v1), sqlite3_value_bytes(v1), &d1);
+    float *b = decode_blob(vt, offset,
+                           sqlite3_value_blob(v2), sqlite3_value_bytes(v2), &d2);
     if (!a || !b || d1 != d2 || d1 == 0) {
         free(a); free(b);
         return -1;
@@ -150,8 +273,9 @@ static void dmphon_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 /* ------------------------------------------------------------------ */
 static void embedding_sim_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 2) { sqlite3_result_null(ctx); return; }
+    sqlite3 *db = sqlite3_context_db_handle(ctx);
     double sim;
-    if (cosine_similarity(argv[0], argv[1], &sim) != 0) {
+    if (cosine_similarity(db, argv[0], argv[1], &sim) != 0) {
         sqlite3_result_null(ctx);
         return;
     }
@@ -160,8 +284,9 @@ static void embedding_sim_func(sqlite3_context *ctx, int argc, sqlite3_value **a
 
 static void embedding_dist_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 2) { sqlite3_result_null(ctx); return; }
+    sqlite3 *db = sqlite3_context_db_handle(ctx);
     double sim;
-    if (cosine_similarity(argv[0], argv[1], &sim) != 0) {
+    if (cosine_similarity(db, argv[0], argv[1], &sim) != 0) {
         sqlite3_result_null(ctx);
         return;
     }

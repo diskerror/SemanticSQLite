@@ -11,7 +11,11 @@
 //                             truncated (Matryoshka-style; not re-trained,
 //                             just a slice — fine for experimentation, not
 //                             claimed to preserve quality at all sizes).
-//   embedding_vector_type  — "f16" (default) or "f32" storage in the BLOB
+//   embedding_vector_type  — "f16" (default), "f32", "bf16", or "int8"
+//   embedding_offset       — byte offset prepended to the blob (default 0;
+//                             the offset bytes are zero-filled, allowing the
+//                             caller to reserve space for a header that an
+//                             external tool writes separately)
 //
 // The model is loaded lazily on first EMBED() call and cached for the
 // process lifetime, keyed by path — calling SEMEXT_SET('embedding_model', X)
@@ -201,7 +205,7 @@ static int ensure_model_loaded(const char *path, const char **errmsg) {
 }
 
 /* ------------------------------------------------------------------ */
-/* f32 -> f16 encode (portable, mirrors ext_functions.c's decode)      */
+/* Scalar encode helpers (portable C, no compiler _Float16 dependency) */
 /* ------------------------------------------------------------------ */
 static uint16_t f32_to_f16(float f) {
     uint32_t x;
@@ -216,6 +220,40 @@ static uint16_t f32_to_f16(float f) {
         return (uint16_t)(sign | 0x7C00u);  // overflow to inf
     }
     return (uint16_t)(sign | ((uint32_t)exp << 10) | (mant >> 13));
+}
+
+static uint16_t f32_to_bf16(float f) {
+    uint32_t x;
+    memcpy(&x, &f, sizeof(x));
+    // NaN: preserve (set a mantissa bit in the top half).
+    if ((x & 0x7fffffffu) > 0x7f800000u) {
+        return (uint16_t)((x >> 16) | 0x0040u);
+    }
+    // Round-to-nearest-even.
+    uint32_t lsb = (x >> 16) & 1u;
+    x += 0x7fffu + lsb;
+    return (uint16_t)(x >> 16);
+}
+
+// Store a uint16_t as two little-endian bytes.
+static void put_u16le(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v & 0xff);
+    p[1] = (uint8_t)((v >> 8) & 0xff);
+}
+
+// Vector type identifiers — must match ext_functions.c's enum.
+enum embed_vec_type { EVT_F32 = 0, EVT_F16 = 1, EVT_BF16 = 2, EVT_INT8 = 3 };
+
+static enum embed_vec_type parse_embed_vec_type(const char *s) {
+    if (!s || s[0] == '\0') return EVT_F16;
+    char c0 = (s[0] >= 'A' && s[0] <= 'Z') ? (char)(s[0] - 'A' + 'a') : s[0];
+    if (c0 == 'f') {
+        if (s[1] == '3' && s[2] == '2') return EVT_F32;
+        return EVT_F16;
+    }
+    if (c0 == 'b') return EVT_BF16;
+    if (c0 == 'i' || c0 == 'q') return EVT_INT8;
+    return EVT_F16;
 }
 
 /* ------------------------------------------------------------------ */
@@ -235,11 +273,14 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     char *model_path = config_get(db, "embedding_model");
     char *dims_str    = config_get(db, "embedding_dims");
     char *vtype_str   = config_get(db, "embedding_vector_type");
+    char *offset_str  = config_get(db, "embedding_offset");
+    char *skip_renorm_str = config_get(db, "embedding_skip_renorm");
 
     const char *errmsg = NULL;
     if (ensure_model_loaded(model_path, &errmsg) != 0) {
         sqlite3_result_error(ctx, errmsg, -1);
         free(model_path); free(dims_str); free(vtype_str);
+        free(offset_str); free(skip_renorm_str);
         return;
     }
     free(model_path);
@@ -252,8 +293,24 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     }
     free(dims_str);
 
-    int use_f32 = (vtype_str && strcmp(vtype_str, "f32") == 0);
+    enum embed_vec_type vtype = parse_embed_vec_type(vtype_str);
     free(vtype_str);
+
+    int blob_offset = 0;
+    if (offset_str && offset_str[0]) {
+        blob_offset = atoi(offset_str);
+        if (blob_offset < 0) blob_offset = 0;
+    }
+    free(offset_str);
+
+    // embedding_skip_renorm: "1"/"true"/"yes" skips L2 normalization.
+    int skip_renorm = 0;
+    if (skip_renorm_str) {
+        skip_renorm = (skip_renorm_str[0] == '1' ||
+                       skip_renorm_str[0] == 't' || skip_renorm_str[0] == 'T' ||
+                       skip_renorm_str[0] == 'y' || skip_renorm_str[0] == 'Y');
+        free(skip_renorm_str);
+    }
 
     const struct llama_vocab *vocab = llama_model_get_vocab(g_cache.model);
     int n_embd = g_cache.n_embd;
@@ -299,31 +356,77 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     }
 
     // L2-normalize (matches Ragger's convention; nomic-bert etc. are not
-    // pre-normalized by mean pooling alone).
-    double norm = 0.0;
-    for (int i = 0; i < n_embd; i++) norm += (double)embd[i] * (double)embd[i];
-    norm = sqrt(norm);
-    float inv_norm = (norm > 1e-12) ? (float)(1.0 / norm) : 0.0f;
+    // pre-normalized by mean pooling alone). Skipped when
+    // embedding_skip_renorm is set — for testing how much normalization
+    // matters to retrieval quality.
+    float inv_norm = 1.0f;
+    if (!skip_renorm) {
+        double norm = 0.0;
+        for (int i = 0; i < n_embd; i++) norm += (double)embd[i] * (double)embd[i];
+        norm = sqrt(norm);
+        inv_norm = (norm > 1e-12) ? (float)(1.0 / norm) : 0.0f;
+    }
 
     int out_dims = target_dims > 0 ? target_dims : n_embd;
 
-    if (use_f32) {
-        float *out = (float *)malloc(sizeof(float) * (size_t)out_dims);
-        if (!out) { sqlite3_result_error_nomem(ctx); return; }
-        for (int i = 0; i < out_dims; i++) {
-            out[i] = (i < n_embd) ? embd[i] * inv_norm : 0.0f;
-        }
-        sqlite3_result_blob(ctx, out, (int)(sizeof(float) * (size_t)out_dims), SQLITE_TRANSIENT);
-        free(out);
-    } else {
-        uint16_t *out = (uint16_t *)malloc(sizeof(uint16_t) * (size_t)out_dims);
-        if (!out) { sqlite3_result_error_nomem(ctx); return; }
-        for (int i = 0; i < out_dims; i++) {
-            out[i] = (i < n_embd) ? f32_to_f16(embd[i] * inv_norm) : 0;
-        }
-        sqlite3_result_blob(ctx, out, (int)(sizeof(uint16_t) * (size_t)out_dims), SQLITE_TRANSIENT);
-        free(out);
+    // Build the normalized f32 working copy (always needed, even for int8
+    // which quantizes from f32).
+    float *normed = (float *)malloc(sizeof(float) * (size_t)out_dims);
+    if (!normed) { sqlite3_result_error_nomem(ctx); return; }
+    for (int i = 0; i < out_dims; i++) {
+        normed[i] = (i < n_embd) ? embd[i] * inv_norm : 0.0f;
     }
+
+    // Compute total blob size: offset header + payload.
+    int payload_bytes;
+    switch (vtype) {
+        case EVT_F32:  payload_bytes = out_dims * 4; break;
+        case EVT_BF16: payload_bytes = out_dims * 2; break;
+        case EVT_INT8: payload_bytes = out_dims + 2; break;  // +2 for f16 scale
+        default:       payload_bytes = out_dims * 2; break;   // EVT_F16
+    }
+    int total = blob_offset + payload_bytes;
+    uint8_t *blob = (uint8_t *)calloc(1, (size_t)total);  // calloc zeros offset region
+    if (!blob) { free(normed); sqlite3_result_error_nomem(ctx); return; }
+
+    uint8_t *payload = blob + blob_offset;
+    switch (vtype) {
+        case EVT_F32:
+            memcpy(payload, normed, sizeof(float) * (size_t)out_dims);
+            break;
+        case EVT_F16:
+            for (int i = 0; i < out_dims; i++)
+                put_u16le(payload + i * 2, f32_to_f16(normed[i]));
+            break;
+        case EVT_BF16:
+            for (int i = 0; i < out_dims; i++)
+                put_u16le(payload + i * 2, f32_to_bf16(normed[i]));
+            break;
+        case EVT_INT8: {
+            // Symmetric per-vector int8: scale = max|x|/127, stored as f16
+            // in the last 2 bytes of the payload.
+            float maxabs = 0.0f;
+            for (int i = 0; i < out_dims; i++) {
+                float a = normed[i] < 0 ? -normed[i] : normed[i];
+                if (a > maxabs) maxabs = a;
+            }
+            float scale = (maxabs > 0.0f) ? (maxabs / 127.0f) : (1.0f / 127.0f);
+            float inv_scale = 1.0f / scale;
+            for (int i = 0; i < out_dims; i++) {
+                float q = normed[i] * inv_scale;
+                if (q > 127.0f) q = 127.0f;
+                if (q < -127.0f) q = -127.0f;
+                int qi = (int)(q + (q >= 0 ? 0.5f : -0.5f));
+                payload[i] = (uint8_t)(int8_t)qi;
+            }
+            put_u16le(payload + out_dims, f32_to_f16(scale));
+            break;
+        }
+    }
+
+    sqlite3_result_blob(ctx, blob, total, SQLITE_TRANSIENT);
+    free(blob);
+    free(normed);
 }
 
 /* ------------------------------------------------------------------ */

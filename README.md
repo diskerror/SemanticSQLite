@@ -86,7 +86,7 @@ Settings are set once per database and persist across `sqlite-ext` restarts
 (they live in `semext_config`, auto-created on first use). The model itself
 is loaded lazily on first `EMBED()` call and cached for the process
 lifetime, keyed by path — calling `SEMEXT_SET('embedding_model', ...)` with
-a different path swaps the cached model on the next call.
+a different path swaps the cached model on the next call. 
 
 `embedding_dims` smaller than the model's native output truncates
 (Matryoshka-style slicing — not re-trained for it, just a slice, fine for
