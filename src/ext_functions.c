@@ -301,9 +301,9 @@ int semext_register(sqlite3 *db, char **pzErrMsg, const void *pApi) {
                             NULL, dmphon_func, NULL, NULL);
     sqlite3_create_function(db, "DMPHON", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC,
                             NULL, dmphon_func, NULL, NULL);
-    sqlite3_create_function(db, "EMBEDDING_SIM", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+    sqlite3_create_function(db, "EMBEDDING_SIM", 2, SQLITE_UTF8,
                             NULL, embedding_sim_func, NULL, NULL);
-    sqlite3_create_function(db, "EMBEDDING_DIST", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+    sqlite3_create_function(db, "EMBEDDING_DIST", 2, SQLITE_UTF8,
                             NULL, embedding_dist_func, NULL, NULL);
     return SQLITE_OK;
 }
