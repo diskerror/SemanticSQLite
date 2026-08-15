@@ -188,7 +188,14 @@ if(SEMEXT_ONNX)
     if(NOT EXISTS "${TOKENIZERS_VENDOR}/CMakeLists.txt")
         message(FATAL_ERROR "vendor/tokenizers-cpp not found. Copy or symlink from Ragger/vendor/tokenizers-cpp.")
     endif()
-    add_subdirectory("${TOKENIZERS_VENDOR}")
+    # EXCLUDE_FROM_ALL: tokenizers-cpp (and its own vendored deps —
+    # msgpack-cxx, sentencepiece) still get BUILT because semext links
+    # against tokenizers_cpp, but their own install() rules are skipped.
+    # Without this, `cmake --install` walks the whole subdirectory graph
+    # and installs msgpack-cxx's headers/cmake-config files into
+    # /usr/local/include/msgpack/ etc. — none of which sqlite-ext needs
+    # or exposes; only the sqlite-ext binary itself should be installed.
+    add_subdirectory("${TOKENIZERS_VENDOR}" EXCLUDE_FROM_ALL)
 
     set(SEMEXT_ONNX_SOURCES src/embed_onnx.cpp)
     list(APPEND SEMEXT_ONNX_LIBS onnxruntime tokenizers_cpp)
