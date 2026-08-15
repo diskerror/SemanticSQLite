@@ -47,18 +47,37 @@ SELECT DMPHON('hello', 2);       -- 'HL'  (only one code exists, so mode 2 == mo
 
 ### `EMBEDDING_SIM(blob1, blob2)` / `EMBEDDING_DIST(blob1, blob2)`
 Cosine similarity / cosine distance between two embedding BLOBs.
-Auto-detects **f16** vs **f32** storage (Ragger stores f16 by default) by
-matching common embedding dimensions (384/512/768/1024/1536/2048/3072/4096).
+The storage dtype and byte layout are controlled by `semext_config` settings:
+
+| key | values | default | purpose |
+|-----|--------|---------|---------|
+| `embedding_vector_type` | `f32`, `f16`, `bf16`, `int8` | `f16` | How the payload bytes are interpreted |
+| `embedding_offset` | integer (bytes) | `0` | Bytes to skip at the start of each blob before the vector payload — set this to match any header your application prepends |
 
 - `EMBEDDING_SIM`  → `[-1, 1]`, 1.0 = identical direction
 - `EMBEDDING_DIST` → `[0, 2]`, 0.0 = identical direction (`1 - cosine`)
 
+**int8 payloads:** N bytes of quantized data, optionally followed by a 2-byte
+IEEE f16 dequantization scale (scale = max|x| / 127). If the scale suffix is
+absent, a fallback of 1/127 is used (correct for unit-norm vectors).
+
+**Note:** these functions are **not** marked `SQLITE_DETERMINISTIC` because
+their behavior depends on the mutable `semext_config` settings. Same blob
+inputs with a different `embedding_vector_type` produce different results.
+
 ```sql
+-- Configure for Ragger's default: raw f16 blobs, no header
+SELECT SEMEXT_SET('embedding_vector_type', 'f16');
+SELECT SEMEXT_SET('embedding_offset', '0');
+
 -- Most semantically similar summaries to summary_id=2
 SELECT s2.summary_id, EMBEDDING_SIM(s1.embedding, s2.embedding) AS sim
 FROM summaries s1, summaries s2
 WHERE s1.summary_id = 2 AND s2.summary_id != 2
 ORDER BY sim DESC LIMIT 10;
+
+-- If your blobs have a 12-byte header (e.g. Ragger's vector_codec format)
+SELECT SEMEXT_SET('embedding_offset', '12');
 ```
 
 ### `EMBED(text)`
@@ -75,7 +94,9 @@ functions:
 ```sql
 SELECT SEMEXT_SET('embedding_model', '/path/to/nomic-embed-text-v1.5.Q4_K_M.gguf');
 SELECT SEMEXT_SET('embedding_dims', '512');            -- optional, 1..4096; omit/0 = model's native dim
-SELECT SEMEXT_SET('embedding_vector_type', 'f32');     -- optional, "f16" (default) or "f32"
+SELECT SEMEXT_SET('embedding_vector_type', 'f16');     -- "f16" (default), "f32", "bf16", or "int8"
+SELECT SEMEXT_SET('embedding_offset', '0');            -- bytes of zero-filled header to prepend (default 0)
+SELECT SEMEXT_SET('embedding_skip_renorm', '0');       -- set to 1 to skip L2 normalization (testing)
 
 SELECT SEMEXT_GET('embedding_model');   -- read back current setting
 
@@ -86,7 +107,22 @@ Settings are set once per database and persist across `sqlite-ext` restarts
 (they live in `semext_config`, auto-created on first use). The model itself
 is loaded lazily on first `EMBED()` call and cached for the process
 lifetime, keyed by path — calling `SEMEXT_SET('embedding_model', ...)` with
-a different path swaps the cached model on the next call. 
+a different path swaps the cached model on the next call.
+
+`embedding_vector_type` controls the on-disk blob format:
+- **f32** — 4 bytes/dim, lossless
+- **f16** — 2 bytes/dim, IEEE half precision (default, matches Ragger)
+- **bf16** — 2 bytes/dim, bfloat16 (f32's exponent range, less mantissa)
+- **int8** — 1 byte/dim + 2-byte f16 scale suffix (symmetric per-vector
+  quantization, scale = max|x| / 127)
+
+`embedding_offset` reserves N zero-filled bytes at the start of the blob,
+allowing an external tool to write a header there. `EMBEDDING_SIM`/`DIST`
+skip the same offset when decoding. Set both to the same value.
+
+`embedding_skip_renorm` disables the L2 normalization step in `EMBED()` —
+useful for testing whether normalization affects retrieval quality on your
+data. Default is off (normalize).
 
 `embedding_dims` smaller than the model's native output truncates
 (Matryoshka-style slicing — not re-trained for it, just a slice, fine for
