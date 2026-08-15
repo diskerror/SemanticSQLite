@@ -227,6 +227,10 @@ add_executable(sqlite-ext
 )
 target_include_directories(sqlite-ext PRIVATE "${SQLITE_VENDOR_DIR}")
 target_link_libraries(sqlite-ext PRIVATE semext sqlite3_amalgamation)
+target_compile_definitions(sqlite-ext PRIVATE SEMEXT_VERSION="${PROJECT_VERSION}")
+if(SEMEXT_ONNX)
+    target_compile_definitions(sqlite-ext PRIVATE SEMEXT_HAVE_ONNX=1)
+endif()
 
 # On Linux, shared libs found via full path (libllama.so, libonnxruntime.so)
 # are NOT automatically embedded into the binary's runtime search path the
