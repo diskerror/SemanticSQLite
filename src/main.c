@@ -18,6 +18,12 @@
 // -version/--version HERE, before handing off to sqlite3_shell(), print
 // SQLite's version plus semext's own build info, and exit — without
 // touching shell.c.
+//
+// No arguments at all (interactive mode, no filename/SQL/options): we
+// also print the same banner before handing off to sqlite3_shell(), so
+// launching the shell interactively shows what you're running (semext
+// version + backends) in addition to upstream's own SQLite version
+// banner that shell.c prints right after.
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -48,6 +54,13 @@ int main(int argc, char **argv) {
             print_semext_version();
             return 0;
         }
+    }
+    if (argc == 1) {
+        // No filename/SQL/options — about to drop into shell.c's own
+        // interactive mode. Show our banner first; upstream prints its
+        // own SQLite version line immediately after this returns.
+        print_semext_version();
+        printf("\n");
     }
     return sqlite3_shell(argc, argv);
 }
