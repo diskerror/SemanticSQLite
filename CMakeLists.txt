@@ -106,6 +106,24 @@ endif()
 message(STATUS "libllama: ${LLAMA_LIBRARY} (headers: ${LLAMA_INCLUDE_DIR})")
 get_filename_component(LLAMA_LIBRARY_DIR "${LLAMA_LIBRARY}" DIRECTORY)
 
+# llama.h #includes "ggml.h", which in an un-installed in-tree llama.cpp
+# build lives in a SEPARATE directory (ggml/include, a sibling of the repo
+# root, not under LLAMA_INCLUDE_DIR) — only a `cmake --install`ed tree
+# flattens ggml's headers alongside llama.h. Search for it near
+# LLAMA_INCLUDE_DIR so in-tree builds (e.g. /opt/llama.cpp/build without
+# an install step) still compile.
+find_path(GGML_INCLUDE_DIR NAMES ggml.h
+    PATHS "${LLAMA_INCLUDE_DIR}" "${LLAMA_INCLUDE_DIR}/../ggml/include"
+          "${LLAMA_ROOT}/ggml/include" /opt/llama.cpp/ggml/include
+          /opt/local/include /usr/local/include /usr/include
+    NO_DEFAULT_PATH)
+if(NOT GGML_INCLUDE_DIR)
+    # Fall back to a normal search (covers installed layouts where ggml.h
+    # sits right next to llama.h, i.e. GGML_INCLUDE_DIR == LLAMA_INCLUDE_DIR).
+    set(GGML_INCLUDE_DIR "${LLAMA_INCLUDE_DIR}")
+endif()
+message(STATUS "ggml headers: ${GGML_INCLUDE_DIR}")
+
 # ---------------------------------------------------------------------------
 # ONNX Runtime + tokenizers-cpp (optional, for the ONNX embedding backend)
 # ---------------------------------------------------------------------------
@@ -193,7 +211,7 @@ add_library(semext STATIC
 target_include_directories(semext PUBLIC
     "${CMAKE_SOURCE_DIR}/include"
 )
-target_include_directories(semext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}" ${SEMEXT_ONNX_INCLUDES})
+target_include_directories(semext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}" "${GGML_INCLUDE_DIR}" ${SEMEXT_ONNX_INCLUDES})
 target_link_libraries(semext PUBLIC sqlite3_amalgamation "${LLAMA_LIBRARY}" ${SEMEXT_ONNX_LIBS})
 if(SEMEXT_ONNX)
     target_compile_definitions(semext PUBLIC SEMEXT_HAVE_ONNX=1)
