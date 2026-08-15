@@ -146,6 +146,20 @@ cd SemanticSQLite
 git submodule update --init --recursive   # pulls vendor/tokenizers-cpp + its deps
 ```
 
+The ONNX backend's tokenizer (`vendor/tokenizers-cpp`) has a Rust component
+(the HuggingFace tokenizers backend is a `cargo build` invoked by CMake) —
+**a Rust toolchain (`cargo`) is required whenever `-DSEMEXT_ONNX=ON`** (the
+default). If `cargo` isn't found, CMake's `find_program()` caches that as
+"not found" at configure time and building fails later with an opaque
+`no such file or directory` from the tokenizers_c custom command — install
+Rust first, then `rm -rf build` and reconfigure (a stale CMake cache won't
+pick up a newly-installed cargo):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
 Requires `libllama` (for the `llama` embedding backend — see
 `embedding_embedder` above):
 
@@ -174,11 +188,8 @@ make -j$(nproc)
 sudo cmake --install .       # installs sqlite-ext to /usr/local/bin
 ```
 
-Produces `sqlite-ext` — drop-in `sqlite3` replacement. Developed and
-verified on macOS (Apple Silicon); the CMake build targets Debian/Linux
-too (RPATH handling for non-standard lib install locations, platform
-detection for the ONNX Runtime download) but hasn't been build-tested
-there yet.
+Produces `sqlite-ext` — drop-in `sqlite3` replacement. Verified on macOS
+(Apple Silicon) and Debian 13 (x86_64), both `-DSEMEXT_ONNX=ON` and `OFF`.
 
 ## Usage
 
