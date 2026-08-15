@@ -36,9 +36,11 @@
 // The shell's real main(), renamed via -Dmain=sqlite3_shell at compile time.
 extern int sqlite3_shell(int argc, char **argv);
 
-static void print_semext_version(void) {
+static void print_semext_version(int include_sqlite_version) {
     printf("sqlite-ext %s (SemanticSQLite)\n", SEMEXT_VERSION);
-    printf("  SQLite %s %s\n", sqlite3_libversion(), sqlite3_sourceid());
+    if (include_sqlite_version) {
+        printf("  SQLite %s %s\n", sqlite3_libversion(), sqlite3_sourceid());
+    }
     printf("  Custom functions: DMPHON, EMBEDDING_SIM, EMBEDDING_DIST, "
            "EMBED, SEMEXT_SET, SEMEXT_GET\n");
     printf("  Embedding backends:"
@@ -51,15 +53,18 @@ static void print_semext_version(void) {
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-version") == 0 || strcmp(argv[i], "--version") == 0) {
-            print_semext_version();
+            print_semext_version(1);
             return 0;
         }
     }
     if (argc == 1) {
         // No filename/SQL/options — about to drop into shell.c's own
-        // interactive mode. Show our banner first; upstream prints its
-        // own SQLite version line immediately after this returns.
-        print_semext_version();
+        // interactive mode. Show our banner first, but WITHOUT the SQLite
+        // version line — shell.c prints its own "SQLite version X.Y.Z ..."
+        // banner immediately after this returns (gated on
+        // stdin_is_interactive, no suppress flag available), so including
+        // it here would just duplicate the same line twice.
+        print_semext_version(0);
         printf("\n");
     }
     return sqlite3_shell(argc, argv);
