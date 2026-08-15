@@ -70,16 +70,19 @@ target_compile_options(sqlite_shell_obj PRIVATE
 )
 
 # ---------------------------------------------------------------------------
-# libllama (MacPorts llama.cpp package) — used by EMBED() to run GGUF
-# embedding models. `port install llama.cpp` provides libllama.dylib +
-# llama.h under /opt/local; find it explicitly since it's not on the
-# default CMake search path on macOS.
+# libllama (llama.cpp) — used by EMBED() to run GGUF embedding models.
+# macOS/MacPorts: `port install llama.cpp` puts it under /opt/local.
+# Debian/Linux: build llama.cpp from source (`cmake --install` to /usr/local)
+#   or install a distro package if available.
 # ---------------------------------------------------------------------------
-find_library(LLAMA_LIBRARY NAMES llama PATHS /opt/local/lib)
-find_path(LLAMA_INCLUDE_DIR NAMES llama.h PATHS /opt/local/include)
+find_library(LLAMA_LIBRARY NAMES llama
+    PATHS /opt/local/lib /usr/local/lib /usr/lib)
+find_path(LLAMA_INCLUDE_DIR NAMES llama.h
+    PATHS /opt/local/include /usr/local/include /usr/include)
 if(NOT LLAMA_LIBRARY OR NOT LLAMA_INCLUDE_DIR)
     message(FATAL_ERROR
         "libllama not found. On macOS: 'sudo port install llama.cpp'. "
+        "On Debian/Linux: build llama.cpp from source and 'cmake --install'. "
         "EMBED() requires libllama; DMPHON/EMBEDDING_SIM/EMBEDDING_DIST do not.")
 endif()
 message(STATUS "libllama: ${LLAMA_LIBRARY} (headers: ${LLAMA_INCLUDE_DIR})")

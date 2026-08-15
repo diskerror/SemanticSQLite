@@ -143,7 +143,15 @@ SELECT EMBEDDING_SIM(EMBED('cats are great pets'), EMBED('quantum chromodynamics
 Requires `libllama` (for `EMBED()`):
 
 ```bash
-sudo port install llama.cpp   # macOS/MacPorts — provides libllama.dylib + llama.h under /opt/local
+# macOS (MacPorts)
+sudo port install llama.cpp
+
+# Debian/Linux — build from source
+git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
+cmake -B build -DBUILD_SHARED_LIBS=ON -DGGML_VULKAN=ON  # or -DGGML_CUDA=ON
+cmake --build build -j$(nproc)
+sudo cmake --install build
+sudo ldconfig
 ```
 
 ```bash
