@@ -76,6 +76,16 @@ FROM summaries s1, summaries s2
 WHERE s1.summary_id = 2 AND s2.summary_id != 2
 ORDER BY sim DESC LIMIT 10;
 
+--Most semantically similar to text entry. EMBED() called only once.
+WITH q(vec) AS (SELECT EMBED('input text for testing'))
+SELECT document_id, sim, text FROM (
+  SELECT d.document_id, d.text,
+    EMBEDDING_SIM(q.vec, d.embedding) AS sim
+  FROM documents d, q
+)
+WHERE sim > 0.7
+ORDER BY sim DESC LIMIT 10;
+
 -- If your blobs have a 12-byte header (e.g. Ragger's vector_codec format)
 SELECT SEMEXT_SET('embedding_offset', '12');
 ```
