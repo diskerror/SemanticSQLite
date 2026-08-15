@@ -140,27 +140,40 @@ SELECT EMBEDDING_SIM(EMBED('cats are great pets'), EMBED('quantum chromodynamics
 
 ## Build
 
+### Requirements
+
+| Requirement | Needed for | Notes |
+|---|---|---|
+| CMake ≥ 3.24 | everything | |
+| C11 + C++20 compiler | everything | GCC 14 / Clang tested |
+| `git` | everything | for the submodule below |
+| **Rust toolchain (`cargo`)** | `-DSEMEXT_ONNX=ON` (default) | `tokenizers-cpp`'s HuggingFace backend is a Rust crate built via `cargo build`, invoked automatically by CMake. **Not optional** unless you build with `-DSEMEXT_ONNX=OFF`. See install command below. |
+| `libllama` (llama.cpp) | `embedding_embedder='llama'` | MacPorts on macOS, build-from-source on Linux — see below. Not needed for the ONNX backend, but the CMake always looks for it (both backends can coexist in one binary). |
+| Internet access (first build only) | `-DSEMEXT_ONNX=ON` | ONNX Runtime is auto-fetched from GitHub releases; cached under `build/_deps/` after the first configure. |
+
+If a requirement is missing, CMake usually fails at build time with an
+opaque error rather than a clean message at configure time (e.g. missing
+`cargo` shows up later as `no such file or directory` from a custom build
+command) — check this table first if a build fails partway through.
+
 ```bash
 git clone <this-repo-url> SemanticSQLite
 cd SemanticSQLite
 git submodule update --init --recursive   # pulls vendor/tokenizers-cpp + its deps
 ```
 
-The ONNX backend's tokenizer (`vendor/tokenizers-cpp`) has a Rust component
-(the HuggingFace tokenizers backend is a `cargo build` invoked by CMake) —
-**a Rust toolchain (`cargo`) is required whenever `-DSEMEXT_ONNX=ON`** (the
-default). If `cargo` isn't found, CMake's `find_program()` caches that as
-"not found" at configure time and building fails later with an opaque
-`no such file or directory` from the tokenizers_c custom command — install
-Rust first, then `rm -rf build` and reconfigure (a stale CMake cache won't
-pick up a newly-installed cargo):
+Install Rust (required for the default ONNX backend):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 ```
 
-Requires `libllama` (for the `llama` embedding backend — see
+If `cargo` gets installed *after* an earlier failed configure, run
+`rm -rf build` before reconfiguring — CMake's `find_program()` caches a
+"not found" result and won't recheck on a stale cache.
+
+Install `libllama` (for the `llama` embedding backend — see
 `embedding_embedder` above):
 
 ```bash
