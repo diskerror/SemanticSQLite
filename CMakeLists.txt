@@ -232,24 +232,29 @@ if(SEMEXT_ONNX)
     target_compile_definitions(sqlite-ext PRIVATE SEMEXT_HAVE_ONNX=1)
 endif()
 
-# On Linux, shared libs found via full path (libllama.so, libonnxruntime.so)
-# are NOT automatically embedded into the binary's runtime search path the
-# way macOS embeds absolute dylib paths — the linker only records the
-# soname, so the loader falls back to ldconfig's cache / LD_LIBRARY_PATH,
-# which won't include non-standard install locations (e.g. a llama.cpp
-# built from source into /usr/local, or a vendored onnxruntime under
-# vendor/onnxruntime/lib). Set an explicit RPATH so `sqlite-ext` finds them
-# without requiring `ldconfig` or LD_LIBRARY_PATH gymnastics.
-if(UNIX AND NOT APPLE)
-    set(SEMEXT_RPATH_DIRS "${LLAMA_LIBRARY_DIR}")
-    if(SEMEXT_ONNX)
-        list(APPEND SEMEXT_RPATH_DIRS "${ORT_DIR}/lib")
-    endif()
-    set_target_properties(sqlite-ext PROPERTIES
-        BUILD_RPATH   "${SEMEXT_RPATH_DIRS}"
-        INSTALL_RPATH "${SEMEXT_RPATH_DIRS}"
-    )
+# Shared libs found via full path (libllama.so/.dylib,
+# libonnxruntime.so/.dylib) are not always embedded into the binary's
+# runtime search path automatically:
+#   - Linux: the linker only records the soname, so the loader falls back
+#     to ldconfig's cache / LD_LIBRARY_PATH, which won't include
+#     non-standard install locations (e.g. llama.cpp built from source
+#     into /usr/local, or a vendored/fetched onnxruntime).
+#   - macOS: onnxruntime is registered as IMPORTED_SONAME "@rpath/...",
+#     which requires an actual LC_RPATH load command in the consumer —
+#     CMake auto-adds one for the BUILD tree, but that does NOT carry
+#     over to `cmake --install`, so the installed binary loses it and
+#     fails with "no LC_RPATH's found" unless INSTALL_RPATH is set here
+#     explicitly (confirmed: install-tree crash, build-tree fine).
+# Set an explicit RPATH on both platforms so `sqlite-ext` finds its shared
+# libs whether run from the build tree or after `cmake --install`.
+set(SEMEXT_RPATH_DIRS "${LLAMA_LIBRARY_DIR}")
+if(SEMEXT_ONNX)
+    list(APPEND SEMEXT_RPATH_DIRS "${ORT_DIR}/lib")
 endif()
+set_target_properties(sqlite-ext PROPERTIES
+    BUILD_RPATH   "${SEMEXT_RPATH_DIRS}"
+    INSTALL_RPATH "${SEMEXT_RPATH_DIRS}"
+)
 
 # ---------------------------------------------------------------------------
 # Install
