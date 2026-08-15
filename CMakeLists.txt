@@ -31,6 +31,33 @@ option(SEMEXT_ONNX "Build with ONNX Runtime embedding backend (default ON)" ON)
 # ---------------------------------------------------------------------------
 set(SQLITE_VENDOR_DIR "${CMAKE_SOURCE_DIR}/vendor/sqlite")
 
+# ---------------------------------------------------------------------------
+# libedit (editline) — gives the shell arrow-key/history line editing.
+# Without HAVE_READLINE or HAVE_EDITLINE, shell.c falls back to a bare
+# fgets()-style reader with NO line editing at all: arrow keys print raw
+# escape sequences into the input instead of moving the cursor, no command
+# history, etc. libedit provides a readline-API-compatible shim
+# (editline/readline.h) that shell.c's HAVE_EDITLINE path targets directly
+# — no readline/GPL licensing entanglement needed.
+#   macOS (MacPorts): `sudo port install libedit`
+#   Debian/Linux: `sudo apt install libedit-dev`
+# If not found, HAVE_EDITLINE is left off and the shell still builds, just
+# without command-line editing (matches the previous -DHAVE_READLINE=0
+# behavior).
+# ---------------------------------------------------------------------------
+find_library(EDITLINE_LIBRARY NAMES edit
+    PATHS /opt/local/lib /usr/local/lib /usr/lib)
+find_path(EDITLINE_INCLUDE_DIR NAMES editline/readline.h
+    PATHS /opt/local/include /usr/local/include /usr/include)
+if(EDITLINE_LIBRARY AND EDITLINE_INCLUDE_DIR)
+    message(STATUS "libedit: ${EDITLINE_LIBRARY} (headers: ${EDITLINE_INCLUDE_DIR}) — command-line editing enabled")
+    set(SHELL_EDITLINE_DEFS -DHAVE_EDITLINE=1 -DHAVE_READLINE=0)
+else()
+    message(STATUS "libedit not found — command-line editing (arrow keys/history) disabled. "
+                    "macOS: 'sudo port install libedit'. Debian/Linux: 'sudo apt install libedit-dev'.")
+    set(SHELL_EDITLINE_DEFS -DHAVE_READLINE=0 -DHAVE_EDITLINE=0)
+endif()
+
 # Shell build flags mirroring what SQLite's own Makefile uses for the CLI
 # (readline history/editing, FTS5, JSON1, R-Tree, etc. are already baked
 # into the amalgamation by configure/mkshellc; here we just add the
@@ -41,7 +68,7 @@ set(SHELL_DEFS
     -DSQLITE_ENABLE_JSON1
     -DSQLITE_ENABLE_DBSTAT_VTAB
     -DSQLITE_ENABLE_EXPLAIN_COMMENTS
-    -DHAVE_READLINE=0
+    ${SHELL_EDITLINE_DEFS}
 )
 
 add_library(sqlite3_amalgamation STATIC
@@ -69,6 +96,9 @@ target_include_directories(sqlite_shell_obj PRIVATE
     "${SQLITE_VENDOR_DIR}"
     "${CMAKE_SOURCE_DIR}/include"
 )
+if(EDITLINE_LIBRARY AND EDITLINE_INCLUDE_DIR)
+    target_include_directories(sqlite_shell_obj PRIVATE "${EDITLINE_INCLUDE_DIR}")
+endif()
 target_compile_options(sqlite_shell_obj PRIVATE
     ${SHELL_DEFS}
     -Dmain=sqlite3_shell
@@ -234,6 +264,9 @@ add_executable(sqlite-ext
 )
 target_include_directories(sqlite-ext PRIVATE "${SQLITE_VENDOR_DIR}")
 target_link_libraries(sqlite-ext PRIVATE semext sqlite3_amalgamation)
+if(EDITLINE_LIBRARY AND EDITLINE_INCLUDE_DIR)
+    target_link_libraries(sqlite-ext PRIVATE "${EDITLINE_LIBRARY}")
+endif()
 target_compile_definitions(sqlite-ext PRIVATE SEMEXT_VERSION="${PROJECT_VERSION}")
 if(SEMEXT_ONNX)
     target_compile_definitions(sqlite-ext PRIVATE SEMEXT_HAVE_ONNX=1)

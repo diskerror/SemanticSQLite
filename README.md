@@ -150,6 +150,7 @@ SELECT EMBEDDING_SIM(EMBED('cats are great pets'), EMBED('quantum chromodynamics
 | **Rust toolchain (`cargo`)** | `-DSEMEXT_ONNX=ON` (default) | `tokenizers-cpp`'s HuggingFace backend is a Rust crate built via `cargo build`, invoked automatically by CMake. **Not optional** unless you build with `-DSEMEXT_ONNX=OFF`. See install command below. |
 | `libllama` (llama.cpp) | `embedding_embedder='llama'` | MacPorts on macOS, build-from-source on Linux — see below. Not needed for the ONNX backend, but the CMake always looks for it (both backends can coexist in one binary). |
 | Internet access (first build only) | `-DSEMEXT_ONNX=ON` | ONNX Runtime is auto-fetched from GitHub releases; cached under `build/_deps/` after the first configure. |
+| `libedit` (optional) | interactive shell usage | Gives the shell arrow-key/history line editing. Without it, arrow keys print raw escape sequences and there's no command history — the shell still works, it's just unpleasant to use interactively. macOS (MacPorts): `sudo port install libedit`. Debian/Linux: `sudo apt install libedit-dev`. Auto-detected; silently skipped if not found. |
 
 If a requirement is missing, CMake usually fails at build time with an
 opaque error rather than a clean message at configure time (e.g. missing
