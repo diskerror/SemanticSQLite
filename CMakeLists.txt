@@ -81,16 +81,26 @@ target_compile_options(sqlite_shell_obj PRIVATE
 # libllama (llama.cpp) — used by EMBED() to run GGUF embedding models.
 # macOS/MacPorts: `port install llama.cpp` puts it under /opt/local.
 # Debian/Linux: build llama.cpp from source (`cmake --install` to /usr/local)
-#   or install a distro package if available.
+#   or install a distro package if available. Also searches
+#   /opt/llama.cpp/build (a common in-tree build location that never got
+#   'cmake --install'ed). Set -DLLAMA_ROOT=/path/to/llama.cpp/build to
+#   point at a specific build tree if none of the above match.
 # ---------------------------------------------------------------------------
+set(LLAMA_ROOT "" CACHE PATH "Root directory of a llama.cpp build/install (searched for lib/ and include/)")
 find_library(LLAMA_LIBRARY NAMES llama
-    PATHS /opt/local/lib /usr/local/lib /usr/lib)
+    PATHS ${LLAMA_ROOT} /opt/local/lib /usr/local/lib /usr/lib
+          /opt/llama.cpp/build/bin /opt/llama.cpp/build/lib
+    PATH_SUFFIXES lib)
 find_path(LLAMA_INCLUDE_DIR NAMES llama.h
-    PATHS /opt/local/include /usr/local/include /usr/include)
+    PATHS ${LLAMA_ROOT} /opt/local/include /usr/local/include /usr/include
+          /opt/llama.cpp/include
+    PATH_SUFFIXES include)
 if(NOT LLAMA_LIBRARY OR NOT LLAMA_INCLUDE_DIR)
     message(FATAL_ERROR
         "libllama not found. On macOS: 'sudo port install llama.cpp'. "
         "On Debian/Linux: build llama.cpp from source and 'cmake --install'. "
+        "If it's built but not installed to a standard path, pass "
+        "-DLLAMA_ROOT=/path/to/llama.cpp/build. "
         "EMBED() requires libllama; DMPHON/EMBEDDING_SIM/EMBEDDING_DIST do not.")
 endif()
 message(STATUS "libllama: ${LLAMA_LIBRARY} (headers: ${LLAMA_INCLUDE_DIR})")
