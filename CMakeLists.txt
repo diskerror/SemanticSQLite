@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
+if(POLICY CMP0175)
+    cmake_policy(SET CMP0175 NEW)
+endif()
 if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version")
 endif()
-project(SemanticSQLite VERSION 0.2.0 LANGUAGES C CXX)
+project(SemanticSQLite VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -91,6 +94,7 @@ if(NOT LLAMA_LIBRARY OR NOT LLAMA_INCLUDE_DIR)
         "EMBED() requires libllama; DMPHON/EMBEDDING_SIM/EMBEDDING_DIST do not.")
 endif()
 message(STATUS "libllama: ${LLAMA_LIBRARY} (headers: ${LLAMA_INCLUDE_DIR})")
+get_filename_component(LLAMA_LIBRARY_DIR "${LLAMA_LIBRARY}" DIRECTORY)
 
 # ---------------------------------------------------------------------------
 # ONNX Runtime + tokenizers-cpp (optional, for the ONNX embedding backend)
@@ -195,6 +199,25 @@ add_executable(sqlite-ext
 )
 target_include_directories(sqlite-ext PRIVATE "${SQLITE_VENDOR_DIR}")
 target_link_libraries(sqlite-ext PRIVATE semext sqlite3_amalgamation)
+
+# On Linux, shared libs found via full path (libllama.so, libonnxruntime.so)
+# are NOT automatically embedded into the binary's runtime search path the
+# way macOS embeds absolute dylib paths — the linker only records the
+# soname, so the loader falls back to ldconfig's cache / LD_LIBRARY_PATH,
+# which won't include non-standard install locations (e.g. a llama.cpp
+# built from source into /usr/local, or a vendored onnxruntime under
+# vendor/onnxruntime/lib). Set an explicit RPATH so `sqlite-ext` finds them
+# without requiring `ldconfig` or LD_LIBRARY_PATH gymnastics.
+if(UNIX AND NOT APPLE)
+    set(SEMEXT_RPATH_DIRS "${LLAMA_LIBRARY_DIR}")
+    if(SEMEXT_ONNX)
+        list(APPEND SEMEXT_RPATH_DIRS "${ORT_DIR}/lib")
+    endif()
+    set_target_properties(sqlite-ext PROPERTIES
+        BUILD_RPATH   "${SEMEXT_RPATH_DIRS}"
+        INSTALL_RPATH "${SEMEXT_RPATH_DIRS}"
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Install

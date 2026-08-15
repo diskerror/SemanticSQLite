@@ -140,7 +140,14 @@ SELECT EMBEDDING_SIM(EMBED('cats are great pets'), EMBED('quantum chromodynamics
 
 ## Build
 
-Requires `libllama` (for `EMBED()`):
+```bash
+git clone <this-repo-url> SemanticSQLite
+cd SemanticSQLite
+git submodule update --init --recursive   # pulls vendor/tokenizers-cpp + its deps
+```
+
+Requires `libllama` (for the `llama` embedding backend — see
+`embedding_embedder` above):
 
 ```bash
 # macOS (MacPorts)
@@ -154,13 +161,24 @@ sudo cmake --install build
 sudo ldconfig
 ```
 
+The ONNX embedding backend (default) needs no separate install — ONNX
+Runtime is auto-fetched at configure time for your platform (macOS
+arm64/x86_64, Linux x86_64/aarch64), and `tokenizers-cpp` comes from the
+submodule pulled above. Disable it with `-DSEMEXT_ONNX=OFF` if you only
+want the `llama` backend (skips the ONNX Runtime download entirely).
+
 ```bash
 mkdir build && cd build
-cmake ..
+cmake ..                    # add -DSEMEXT_ONNX=OFF to skip ONNX Runtime
 make -j$(nproc)
+sudo cmake --install .       # installs sqlite-ext to /usr/local/bin
 ```
 
-Produces `sqlite-ext` — drop-in `sqlite3` replacement.
+Produces `sqlite-ext` — drop-in `sqlite3` replacement. Developed and
+verified on macOS (Apple Silicon); the CMake build targets Debian/Linux
+too (RPATH handling for non-standard lib install locations, platform
+detection for the ONNX Runtime download) but hasn't been build-tested
+there yet.
 
 ## Usage
 
@@ -176,7 +194,8 @@ official mirror) at the commit recorded in
 `vendor/sqlite/UPSTREAM_COMMIT.txt`:
 
 ```bash
-cd /path/to/sqlite-fork && git pull
+git clone https://github.com/sqlite/sqlite
+cd /path/to/sqlite-clone && git pull
 mkdir build-amal && cd build-amal
 ../configure --disable-tcl
 make sqlite3.c shell.c sqlite3.h
