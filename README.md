@@ -93,6 +93,7 @@ functions:
 
 ```sql
 SELECT SEMEXT_SET('embedding_model', '/path/to/nomic-embed-text-v1.5.Q4_K_M.gguf');
+SELECT SEMEXT_SET('embedding_model', '/path/to/all-MiniLM-L6-v2');
 SELECT SEMEXT_SET('embedding_dims', '512');            -- optional, 1..4096; omit/0 = model's native dim
 SELECT SEMEXT_SET('embedding_vector_type', 'f16');     -- "f16" (default), "f32", "bf16", or "int8"
 SELECT SEMEXT_SET('embedding_offset', '0');            -- bytes of zero-filled header to prepend (default 0)
@@ -128,15 +129,26 @@ data. Default is off (normalize).
 (Matryoshka-style slicing — not re-trained for it, just a slice, fine for
 experimentation); larger zero-pads.
 
-Any GGUF text-embedding model works (mean/CLS/last pooling all handled via
-`llama_context_params.pooling_type = LLAMA_POOLING_TYPE_MEAN`). Verified
-against `nomic-embed-text-v1.5` (768-dim, nomic-bert architecture).
+Any GGUF text-embedding model works with the `llama` backend (mean/CLS/last
+pooling all handled via `llama_context_params.pooling_type =
+LLAMA_POOLING_TYPE_MEAN`). The `onnx` backend (default) uses the same
+tokenize → ONNX inference → mean-pool → L2-normalize pipeline as Ragger.
 
 ```sql
--- Sanity check: related text scores higher than unrelated text
-SELECT EMBEDDING_SIM(EMBED('cats are great pets'), EMBED('dogs are wonderful companions')); -- ~0.49
-SELECT EMBEDDING_SIM(EMBED('cats are great pets'), EMBED('quantum chromodynamics'));        -- ~0.01
+-- Sanity check: related text scores higher than unrelated text.
+-- Absolute numbers depend on which model/backend produced the vectors —
+-- not comparable across different models, only useful as a
+-- related-vs-unrelated ordering check on a given model.
+SELECT EMBEDDING_SIM(EMBED('cats are great pets'), EMBED('dogs are wonderful companions'));
+SELECT EMBEDDING_SIM(EMBED('cats are great pets'), EMBED('quantum chromodynamics'));
 ```
+
+Measured examples (yours will differ if you use a different model):
+
+| Backend | Model | related sim | unrelated sim |
+|---|---|---|---|
+| `llama` | nomic-embed-text-v1.5 (768-dim) | ~0.49 | ~0.01 |
+| `onnx` | all-MiniLM-L6-v2 (384-dim) | ~0.94 | ~0.88 |
 
 ## Build
 
