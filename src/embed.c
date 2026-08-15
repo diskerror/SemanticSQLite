@@ -1,10 +1,12 @@
-// embed.c — EMBED(text) via a GGUF model loaded through libllama, plus the
-// semext_config table + SEMEXT_SET/SEMEXT_GET that stand in for the PRAGMAs
-// SQLite extensions can't actually define (PRAGMA syntax is hardcoded into
-// the core parser — not an extension point like functions/vtabs are).
+// embed.c — EMBED(text) via either an ONNX model (default, matching Ragger's
+// pipeline exactly) or a GGUF model via libllama. Backend is selected by the
+// `embedding_embedder` config key ("onnx" or "llama").
 //
 // Config keys consulted by EMBED():
-//   embedding_model        — path to a GGUF embedding model (required)
+//   embedding_embedder     — "onnx" (default) or "llama"
+//   embedding_model        — path to the model (ONNX: directory containing
+//                             model.onnx + tokenizer.json; llama: path to a
+//                             single .gguf file)
 //   embedding_dims         — target output dimension, 1..4096 (optional;
 //                             omit/0 to use the model's native n_embd).
 //                             Larger than native = zero-padded; smaller =
@@ -16,12 +18,17 @@
 //                             the offset bytes are zero-filled, allowing the
 //                             caller to reserve space for a header that an
 //                             external tool writes separately)
+//   embedding_skip_renorm  — "1"/"true"/"yes" to skip L2 normalization
 //
 // The model is loaded lazily on first EMBED() call and cached for the
 // process lifetime, keyed by path — calling SEMEXT_SET('embedding_model', X)
 // with a different path swaps the cached model on the next EMBED() call.
 
 #include "embed.h"
+#include "embed_llama.h"
+#ifdef SEMEXT_HAVE_ONNX
+#include "embed_onnx.h"
+#endif
 
 #include <llama.h>
 #include <sqlite3.h>
@@ -128,7 +135,7 @@ static void unload_cached_model(void) {
     g_cache.n_embd = 0;
 }
 
-void semext_embed_shutdown(void) {
+void semext_llama_shutdown(void) {
     unload_cached_model();
     if (g_backend_initialized) {
         llama_backend_free();
@@ -136,11 +143,14 @@ void semext_embed_shutdown(void) {
     }
 }
 
-// Ensures g_cache holds a loaded model for `path`. Returns 0 on success,
-// -1 on failure (bad path, load error) with *errmsg set to a static or
-// malloc'd message (malloc'd messages are the caller's to free — check
-// *errmsg_owned).
-static int ensure_model_loaded(const char *path, const char **errmsg) {
+void semext_embed_shutdown(void) {
+    semext_llama_shutdown();
+#ifdef SEMEXT_HAVE_ONNX
+    semext_onnx_shutdown();
+#endif
+}
+
+int semext_llama_load(const char *path, const char **errmsg) {
     *errmsg = NULL;
     if (!path || path[0] == '\0') {
         *errmsg = "embedding_model not set — call SEMEXT_SET('embedding_model', '/path/to/model.gguf') first";
@@ -184,23 +194,56 @@ static int ensure_model_loaded(const char *path, const char **errmsg) {
     g_cache.ctx = lctx;
     g_cache.n_embd = llama_model_n_embd(model);
 
-    // Register our cleanup AFTER the model/backend load, not at extension
-    // registration time. atexit() runs handlers LIFO; ggml's Metal backend
-    // registers its own static-object cleanup lazily, the first time a
-    // Metal device is touched (i.e. during the llama_model_load_from_file
-    // call above). Registering ours here — strictly after that point —
-    // guarantees ours is later in the LIFO chain, so it runs FIRST at exit
-    // and frees all llama/ggml buffers before ggml's own static destructor
-    // asserts that everything was already freed. Registering it earlier
-    // (e.g. at semext_register_embed() time, before any model ever loads)
-    // put ours ahead of ggml's in the chain, so ggml's ran first and hit
-    // "GGML_ASSERT([rsets->data count] == 0)" on process exit — confirmed
-    // by reproducing and fixing this exact ordering bug.
-    static int atexit_registered = 0;
-    if (!atexit_registered) {
-        atexit(semext_embed_shutdown);
-        atexit_registered = 1;
+    // atexit cleanup is registered centrally in embed_func() after
+    // any successful backend load — not here — so the LIFO ordering
+    // works for both llama-only and ONNX-only usage.
+    return 0;
+}
+
+int semext_llama_encode(const char *text, int text_len,
+                        float **out, int *out_dims) {
+    *out = NULL;
+    *out_dims = 0;
+    if (!g_cache.model || !g_cache.ctx) return -1;
+
+    const struct llama_vocab *vocab = llama_model_get_vocab(g_cache.model);
+    int n_embd = g_cache.n_embd;
+
+    int n_tokens_max = text_len + 8;
+    llama_token *tokens = (llama_token *)malloc(sizeof(llama_token) * (size_t)n_tokens_max);
+    if (!tokens) return -1;
+
+    int n_tokens = llama_tokenize(vocab, text, text_len, tokens, n_tokens_max, true, true);
+    if (n_tokens < 0) {
+        n_tokens_max = -n_tokens + 8;
+        llama_token *retry = (llama_token *)realloc(tokens, sizeof(llama_token) * (size_t)n_tokens_max);
+        if (!retry) { free(tokens); return -1; }
+        tokens = retry;
+        n_tokens = llama_tokenize(vocab, text, text_len, tokens, n_tokens_max, true, true);
     }
+    if (n_tokens <= 0) { free(tokens); return -1; }
+
+    llama_memory_clear(llama_get_memory(g_cache.ctx), true);
+    struct llama_batch batch = llama_batch_get_one(tokens, n_tokens);
+    int rc = llama_decode(g_cache.ctx, batch);
+    free(tokens);
+    if (rc != 0) return -1;
+
+    const float *embd = llama_get_embeddings_seq(g_cache.ctx, 0);
+    if (!embd) embd = llama_get_embeddings_ith(g_cache.ctx, 0);
+    if (!embd) return -1;
+
+    // L2-normalize (matches Ragger's convention).
+    float *result = (float *)malloc(sizeof(float) * (size_t)n_embd);
+    if (!result) return -1;
+    double norm = 0.0;
+    for (int i = 0; i < n_embd; i++) norm += (double)embd[i] * (double)embd[i];
+    norm = sqrt(norm);
+    float inv = (norm > 1e-12) ? (float)(1.0 / norm) : 0.0f;
+    for (int i = 0; i < n_embd; i++) result[i] = embd[i] * inv;
+
+    *out = result;
+    *out_dims = n_embd;
     return 0;
 }
 
@@ -257,6 +300,24 @@ static enum embed_vec_type parse_embed_vec_type(const char *s) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Embedder backend identifiers                                        */
+/* ------------------------------------------------------------------ */
+enum embed_backend { EB_ONNX = 0, EB_LLAMA = 1 };
+
+static enum embed_backend parse_backend(const char *s) {
+    if (!s || s[0] == '\0') {
+#ifdef SEMEXT_HAVE_ONNX
+        return EB_ONNX;
+#else
+        return EB_LLAMA;
+#endif
+    }
+    char c0 = (s[0] >= 'A' && s[0] <= 'Z') ? (char)(s[0] - 'A' + 'a') : s[0];
+    if (c0 == 'l' || c0 == 'g') return EB_LLAMA;  // llama / gguf
+    return EB_ONNX;
+}
+
+/* ------------------------------------------------------------------ */
 /* EMBED(text) -> BLOB embedding, per semext_config settings           */
 /* ------------------------------------------------------------------ */
 static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
@@ -270,14 +331,32 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     sqlite3 *db = sqlite3_context_db_handle(ctx);
     ensure_config_table(db);
 
-    char *model_path = config_get(db, "embedding_model");
-    char *dims_str    = config_get(db, "embedding_dims");
-    char *vtype_str   = config_get(db, "embedding_vector_type");
-    char *offset_str  = config_get(db, "embedding_offset");
+    char *embedder_str = config_get(db, "embedding_embedder");
+    char *model_path   = config_get(db, "embedding_model");
+    char *dims_str     = config_get(db, "embedding_dims");
+    char *vtype_str    = config_get(db, "embedding_vector_type");
+    char *offset_str   = config_get(db, "embedding_offset");
     char *skip_renorm_str = config_get(db, "embedding_skip_renorm");
 
+    enum embed_backend backend = parse_backend(embedder_str);
+    free(embedder_str);
+
+    // Load the model via the selected backend.
     const char *errmsg = NULL;
-    if (ensure_model_loaded(model_path, &errmsg) != 0) {
+    int load_rc;
+    switch (backend) {
+#ifdef SEMEXT_HAVE_ONNX
+        case EB_ONNX:
+            load_rc = semext_onnx_load(model_path, &errmsg);
+            break;
+#endif
+        case EB_LLAMA:
+        default:
+            load_rc = semext_llama_load(model_path, &errmsg);
+            break;
+    }
+    if (load_rc != 0) {
+        if (!errmsg) errmsg = "failed to load embedding model";
         sqlite3_result_error(ctx, errmsg, -1);
         free(model_path); free(dims_str); free(vtype_str);
         free(offset_str); free(skip_renorm_str);
@@ -285,7 +364,20 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     }
     free(model_path);
 
-    int target_dims = 0;  // 0 = use native
+    // Ensure cleanup runs at exit for whichever backend(s) were loaded.
+    // Must be registered AFTER any llama model load (atexit LIFO ordering
+    // vs ggml's Metal cleanup — see the comment in semext_llama_load).
+    // For ONNX-only usage, the llama backend was never touched so there's
+    // no ggml ordering constraint, but we still need to free the ONNX env.
+    {
+        static int atexit_registered = 0;
+        if (!atexit_registered) {
+            atexit(semext_embed_shutdown);
+            atexit_registered = 1;
+        }
+    }
+
+    int target_dims = 0;
     if (dims_str && dims_str[0]) {
         target_dims = atoi(dims_str);
         if (target_dims < 0) target_dims = 0;
@@ -303,7 +395,6 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     }
     free(offset_str);
 
-    // embedding_skip_renorm: "1"/"true"/"yes" skips L2 normalization.
     int skip_renorm = 0;
     if (skip_renorm_str) {
         skip_renorm = (skip_renorm_str[0] == '1' ||
@@ -312,70 +403,54 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
         free(skip_renorm_str);
     }
 
-    const struct llama_vocab *vocab = llama_model_get_vocab(g_cache.model);
-    int n_embd = g_cache.n_embd;
-
-    // Tokenize (add BOS/special as the model's tokenizer config dictates).
-    int n_tokens_max = text_len + 8;
-    llama_token *tokens = (llama_token *)malloc(sizeof(llama_token) * (size_t)n_tokens_max);
-    if (!tokens) { sqlite3_result_error_nomem(ctx); return; }
-
-    int n_tokens = llama_tokenize(vocab, text, text_len, tokens, n_tokens_max, true, true);
-    if (n_tokens < 0) {
-        n_tokens_max = -n_tokens + 8;
-        llama_token *retry = (llama_token *)realloc(tokens, sizeof(llama_token) * (size_t)n_tokens_max);
-        if (!retry) { free(tokens); sqlite3_result_error_nomem(ctx); return; }
-        tokens = retry;
-        n_tokens = llama_tokenize(vocab, text, text_len, tokens, n_tokens_max, true, true);
+    // Encode via the selected backend. The backend returns a normalized f32
+    // vector (both backends L2-normalize internally).
+    float *raw_emb = NULL;
+    int raw_dims = 0;
+    int enc_rc;
+    switch (backend) {
+#ifdef SEMEXT_HAVE_ONNX
+        case EB_ONNX:
+            enc_rc = semext_onnx_encode(text, text_len, &raw_emb, &raw_dims);
+            break;
+#endif
+        case EB_LLAMA:
+        default:
+            enc_rc = semext_llama_encode(text, text_len, &raw_emb, &raw_dims);
+            break;
     }
-    if (n_tokens <= 0) {
-        free(tokens);
-        sqlite3_result_error(ctx, "tokenization failed or produced no tokens", -1);
+    if (enc_rc != 0 || !raw_emb) {
+        free(raw_emb);
+        sqlite3_result_error(ctx, "embedding encode failed", -1);
         return;
     }
 
-    llama_memory_clear(llama_get_memory(g_cache.ctx), true);
+    int out_dims = target_dims > 0 ? target_dims : raw_dims;
 
-    struct llama_batch batch = llama_batch_get_one(tokens, n_tokens);
-    int rc = llama_decode(g_cache.ctx, batch);
-    free(tokens);
-    if (rc != 0) {
-        sqlite3_result_error(ctx, "llama_decode failed", -1);
-        return;
-    }
-
-    const float *embd = llama_get_embeddings_seq(g_cache.ctx, 0);
-    if (!embd) {
-        // MEAN pooling should populate seq embeddings; fall back to ith(0)
-        // for models/configs where pooling didn't apply as expected.
-        embd = llama_get_embeddings_ith(g_cache.ctx, 0);
-    }
-    if (!embd) {
-        sqlite3_result_error(ctx, "failed to retrieve embeddings from context", -1);
-        return;
-    }
-
-    // L2-normalize (matches Ragger's convention; nomic-bert etc. are not
-    // pre-normalized by mean pooling alone). Skipped when
-    // embedding_skip_renorm is set — for testing how much normalization
-    // matters to retrieval quality.
-    float inv_norm = 1.0f;
-    if (!skip_renorm) {
-        double norm = 0.0;
-        for (int i = 0; i < n_embd; i++) norm += (double)embd[i] * (double)embd[i];
-        norm = sqrt(norm);
-        inv_norm = (norm > 1e-12) ? (float)(1.0 / norm) : 0.0f;
-    }
-
-    int out_dims = target_dims > 0 ? target_dims : n_embd;
-
-    // Build the normalized f32 working copy (always needed, even for int8
-    // which quantizes from f32).
+    // Build the f32 working copy with optional re-normalization skip,
+    // dim truncation/zero-padding.
     float *normed = (float *)malloc(sizeof(float) * (size_t)out_dims);
-    if (!normed) { sqlite3_result_error_nomem(ctx); return; }
-    for (int i = 0; i < out_dims; i++) {
-        normed[i] = (i < n_embd) ? embd[i] * inv_norm : 0.0f;
+    if (!normed) { free(raw_emb); sqlite3_result_error_nomem(ctx); return; }
+
+    if (skip_renorm) {
+        for (int i = 0; i < out_dims; i++)
+            normed[i] = (i < raw_dims) ? raw_emb[i] : 0.0f;
+    } else {
+        // Re-normalize after any dim truncation (truncating a unit vector
+        // doesn't leave it unit-norm).
+        for (int i = 0; i < out_dims; i++)
+            normed[i] = (i < raw_dims) ? raw_emb[i] : 0.0f;
+        if (out_dims != raw_dims) {
+            double norm = 0.0;
+            for (int i = 0; i < out_dims; i++) norm += (double)normed[i] * (double)normed[i];
+            norm = sqrt(norm);
+            if (norm > 1e-12) {
+                float inv = (float)(1.0 / norm);
+                for (int i = 0; i < out_dims; i++) normed[i] *= inv;
+            }
+        }
     }
+    free(raw_emb);
 
     // Compute total blob size: offset header + payload.
     int payload_bytes;

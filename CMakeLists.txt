@@ -12,6 +12,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---------------------------------------------------------------------------
+# Build options
+# ---------------------------------------------------------------------------
+option(SEMEXT_ONNX "Build with ONNX Runtime embedding backend (default ON)" ON)
+
+# ---------------------------------------------------------------------------
 # Vendored SQLite: an UNMODIFIED upstream amalgamation (sqlite3.c/.h) and CLI
 # shell (shell.c), generated from the official sqlite/sqlite mirror
 # (github.com/diskerror/sqlite fork) via `make sqlite3.c shell.c sqlite3.h`.
@@ -88,6 +93,80 @@ endif()
 message(STATUS "libllama: ${LLAMA_LIBRARY} (headers: ${LLAMA_INCLUDE_DIR})")
 
 # ---------------------------------------------------------------------------
+# ONNX Runtime + tokenizers-cpp (optional, for the ONNX embedding backend)
+# ---------------------------------------------------------------------------
+set(SEMEXT_ONNX_SOURCES "")
+set(SEMEXT_ONNX_LIBS "")
+set(SEMEXT_ONNX_INCLUDES "")
+
+if(SEMEXT_ONNX)
+    # ---- ONNX Runtime (vendored or auto-fetched, same as Ragger) ----
+    set(ORT_VERSION "1.24.4" CACHE STRING "ONNX Runtime version")
+    if(APPLE)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+            set(ORT_PKG "onnxruntime-osx-arm64-${ORT_VERSION}")
+        else()
+            set(ORT_PKG "onnxruntime-osx-x86_64-${ORT_VERSION}")
+        endif()
+        set(ORT_LIB_NAME "libonnxruntime.dylib")
+    elseif(UNIX)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+            set(ORT_PKG "onnxruntime-linux-aarch64-${ORT_VERSION}")
+        else()
+            set(ORT_PKG "onnxruntime-linux-x64-${ORT_VERSION}")
+        endif()
+        set(ORT_LIB_NAME "libonnxruntime.so")
+    else()
+        message(FATAL_ERROR "Unsupported platform for ONNX Runtime")
+    endif()
+
+    set(ORT_VENDOR_DIR "${CMAKE_SOURCE_DIR}/vendor/onnxruntime")
+    if(EXISTS "${ORT_VENDOR_DIR}/lib/${ORT_LIB_NAME}"
+       AND EXISTS "${ORT_VENDOR_DIR}/include/onnxruntime_cxx_api.h")
+        set(ORT_DIR "${ORT_VENDOR_DIR}")
+        message(STATUS "ONNX Runtime: using vendored ${ORT_DIR}")
+    else()
+        set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_PKG}.tgz")
+        set(ORT_CACHE "${CMAKE_BINARY_DIR}/_deps/onnxruntime/${ORT_PKG}")
+        if(NOT EXISTS "${ORT_CACHE}/lib/${ORT_LIB_NAME}")
+            message(STATUS "ONNX Runtime: fetching ${ORT_URL}")
+            file(DOWNLOAD "${ORT_URL}" "${CMAKE_BINARY_DIR}/_deps/${ORT_PKG}.tgz" SHOW_PROGRESS STATUS _ort_dl)
+            list(GET _ort_dl 0 _ort_rc)
+            if(NOT _ort_rc EQUAL 0)
+                message(FATAL_ERROR "ONNX Runtime download failed: ${_ort_dl}")
+            endif()
+            file(ARCHIVE_EXTRACT INPUT "${CMAKE_BINARY_DIR}/_deps/${ORT_PKG}.tgz"
+                 DESTINATION "${CMAKE_BINARY_DIR}/_deps/onnxruntime")
+        endif()
+        set(ORT_DIR "${ORT_CACHE}")
+        message(STATUS "ONNX Runtime: ${ORT_DIR}")
+    endif()
+    set(ORT_LIB "${ORT_DIR}/lib/${ORT_LIB_NAME}")
+    add_library(onnxruntime SHARED IMPORTED)
+    set_target_properties(onnxruntime PROPERTIES
+        IMPORTED_LOCATION "${ORT_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${ORT_DIR}/include"
+    )
+    if(APPLE)
+        set_target_properties(onnxruntime PROPERTIES IMPORTED_SONAME "@rpath/libonnxruntime.dylib")
+    endif()
+
+    # ---- tokenizers-cpp (vendored, same subtree as Ragger) ----
+    set(TOKENIZERS_VENDOR "${CMAKE_SOURCE_DIR}/vendor/tokenizers-cpp")
+    if(NOT EXISTS "${TOKENIZERS_VENDOR}/CMakeLists.txt")
+        message(FATAL_ERROR "vendor/tokenizers-cpp not found. Copy or symlink from Ragger/vendor/tokenizers-cpp.")
+    endif()
+    add_subdirectory("${TOKENIZERS_VENDOR}")
+
+    set(SEMEXT_ONNX_SOURCES src/embed_onnx.cpp)
+    list(APPEND SEMEXT_ONNX_LIBS onnxruntime tokenizers_cpp)
+    list(APPEND SEMEXT_ONNX_INCLUDES "${ORT_DIR}/include")
+    message(STATUS "ONNX embedding backend: enabled")
+else()
+    message(STATUS "ONNX embedding backend: disabled (-DSEMEXT_ONNX=OFF)")
+endif()
+
+# ---------------------------------------------------------------------------
 # Our added functions: DMPHON(), EMBEDDING_SIM()/EMBEDDING_DIST(), EMBED()
 # ---------------------------------------------------------------------------
 add_library(semext STATIC
@@ -95,12 +174,16 @@ add_library(semext STATIC
     src/double_metaphone.cpp
     src/double_metaphone_capi.cpp
     src/embed.c
+    ${SEMEXT_ONNX_SOURCES}
 )
 target_include_directories(semext PUBLIC
     "${CMAKE_SOURCE_DIR}/include"
 )
-target_include_directories(semext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}")
-target_link_libraries(semext PUBLIC sqlite3_amalgamation "${LLAMA_LIBRARY}")
+target_include_directories(semext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}" ${SEMEXT_ONNX_INCLUDES})
+target_link_libraries(semext PUBLIC sqlite3_amalgamation "${LLAMA_LIBRARY}" ${SEMEXT_ONNX_LIBS})
+if(SEMEXT_ONNX)
+    target_compile_definitions(semext PUBLIC SEMEXT_HAVE_ONNX=1)
+endif()
 
 # ---------------------------------------------------------------------------
 # sqlite-ext executable: our tiny main() pre-registers semext's functions
