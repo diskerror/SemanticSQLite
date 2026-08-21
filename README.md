@@ -237,14 +237,45 @@ sudo ldconfig
 The ONNX embedding backend (default) needs no separate install — ONNX
 Runtime is auto-fetched at configure time for your platform (macOS
 arm64/x86_64, Linux x86_64/aarch64), and `tokenizers-cpp` comes from the
-submodule pulled above. Disable it with `-DSEMEXT_ONNX=OFF` if you only
-want the `llama` backend (skips the ONNX Runtime download entirely).
+submodule pulled above. Disable it with `--no-onnx` (build script) or
+`-DSEMEXT_ONNX=OFF` (manual cmake) if you only want the `llama` backend.
+
+[c_lib](https://github.com/diskerror/c_lib) (shared C++ utilities) is
+auto-fetched from GitHub at configure time via CMake FetchContent.
 
 ```bash
-mkdir build && cd build
-cmake ..                    # add -DSEMEXT_ONNX=OFF to skip ONNX Runtime
-make -j$(nproc)
-sudo cmake --install .       # installs semqlite to /usr/local/bin
+./scripts/build.sh              # check deps, configure, build
+sudo cmake --install build      # installs semqlite to /usr/local/bin
+```
+
+### Dev build (local c_lib)
+
+If you have a local checkout of [c_lib](https://github.com/diskerror/c_lib),
+create a `CMakeUserPresets.json` (gitignored) to use it instead of fetching
+from GitHub:
+
+```json
+{
+  "version": 6,
+  "configurePresets": [{
+    "name": "dev",
+    "inherits": "default",
+    "cacheVariables": {
+      "FETCHCONTENT_SOURCE_DIR_C_LIB": "/path/to/your/c_lib"
+    }
+  }]
+}
+```
+
+The build script auto-detects this file and passes the variable to cmake.
+CLion also picks up the `dev` preset from its CMake profile dropdown.
+
+Manual cmake (without the build script):
+
+```bash
+cmake --preset dev              # or: cmake -B build
+cmake --build build -j8
+sudo cmake --install build
 ```
 
 Produces `semqlite` — drop-in `sqlite3` replacement. Verified on macOS
