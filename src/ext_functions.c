@@ -11,7 +11,7 @@
 //   embedding_offset      — byte offset into the blob where the vector payload
 //                            starts (default 0; set to skip past any header)
 
-#include "double_metaphone_capi.h"
+#include "DoubleMetaphoneCapi.h"
 
 #include <sqlite3.h>
 #include <ctype.h>
@@ -258,13 +258,13 @@ static void dmphon_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
         mode = sqlite3_value_int(argv[1]);
     }
 
-    char *result = semext_phonize_mode(text, mode);
+    char *result = diskerror_phonize_mode(text, mode);
     if (!result) {
         sqlite3_result_text(ctx, "", 0, SQLITE_STATIC);
         return;
     }
     sqlite3_result_text(ctx, result, -1, SQLITE_TRANSIENT);
-    semext_free(result);
+    diskerror_free(result);
 }
 
 /* ------------------------------------------------------------------ */

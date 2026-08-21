@@ -223,8 +223,8 @@ if(SEMEXT_ONNX)
     # against tokenizers_cpp, but their own install() rules are skipped.
     # Without this, `cmake --install` walks the whole subdirectory graph
     # and installs msgpack-cxx's headers/cmake-config files into
-    # /usr/local/include/msgpack/ etc. — none of which sqlite-ext needs
-    # or exposes; only the sqlite-ext binary itself should be installed.
+    # /usr/local/include/msgpack/ etc. — none of which semqlite needs
+    # or exposes; only the semqlite binary itself should be installed.
     add_subdirectory("${TOKENIZERS_VENDOR}" EXCLUDE_FROM_ALL)
 
     set(SEMEXT_ONNX_SOURCES src/embed_onnx.cpp)
@@ -236,17 +236,28 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# c_lib — DoubleMetaphone (vendored via symlink)
+# ---------------------------------------------------------------------------
+set(C_LIB_DIR "${CMAKE_SOURCE_DIR}/vendor/c_lib")
+set_source_files_properties(
+    "${C_LIB_DIR}/DoubleMetaphone.cp"
+    "${C_LIB_DIR}/DoubleMetaphoneCapi.cp"
+    PROPERTIES LANGUAGE CXX
+)
+
+# ---------------------------------------------------------------------------
 # Our added functions: DMPHON(), EMBEDDING_SIM()/EMBEDDING_DIST(), EMBED()
 # ---------------------------------------------------------------------------
 add_library(semext STATIC
     src/ext_functions.c
-    src/double_metaphone.cpp
-    src/double_metaphone_capi.cpp
+    "${C_LIB_DIR}/DoubleMetaphone.cp"
+    "${C_LIB_DIR}/DoubleMetaphoneCapi.cp"
     src/embed.c
     ${SEMEXT_ONNX_SOURCES}
 )
 target_include_directories(semext PUBLIC
     "${CMAKE_SOURCE_DIR}/include"
+    "${C_LIB_DIR}"
 )
 target_include_directories(semext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}" "${GGML_INCLUDE_DIR}" ${SEMEXT_ONNX_INCLUDES})
 target_link_libraries(semext PUBLIC sqlite3_amalgamation "${LLAMA_LIBRARY}" ${SEMEXT_ONNX_LIBS})
@@ -255,21 +266,21 @@ if(SEMEXT_ONNX)
 endif()
 
 # ---------------------------------------------------------------------------
-# sqlite-ext executable: our tiny main() pre-registers semext's functions
+# semqlite executable: our tiny main() pre-registers semext's functions
 # via sqlite3_auto_extension(), then hands off to the real shell.
 # ---------------------------------------------------------------------------
-add_executable(sqlite-ext
+add_executable(semqlite
     src/main.c
     $<TARGET_OBJECTS:sqlite_shell_obj>
 )
-target_include_directories(sqlite-ext PRIVATE "${SQLITE_VENDOR_DIR}")
-target_link_libraries(sqlite-ext PRIVATE semext sqlite3_amalgamation)
+target_include_directories(semqlite PRIVATE "${SQLITE_VENDOR_DIR}")
+target_link_libraries(semqlite PRIVATE semext sqlite3_amalgamation)
 if(EDITLINE_LIBRARY AND EDITLINE_INCLUDE_DIR)
-    target_link_libraries(sqlite-ext PRIVATE "${EDITLINE_LIBRARY}")
+    target_link_libraries(semqlite PRIVATE "${EDITLINE_LIBRARY}")
 endif()
-target_compile_definitions(sqlite-ext PRIVATE SEMEXT_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(semqlite PRIVATE SEMEXT_VERSION="${PROJECT_VERSION}")
 if(SEMEXT_ONNX)
-    target_compile_definitions(sqlite-ext PRIVATE SEMEXT_HAVE_ONNX=1)
+    target_compile_definitions(semqlite PRIVATE SEMEXT_HAVE_ONNX=1)
 endif()
 
 # Shared libs found via full path (libllama.so/.dylib,
@@ -285,13 +296,13 @@ endif()
 #     over to `cmake --install`, so the installed binary loses it and
 #     fails with "no LC_RPATH's found" unless INSTALL_RPATH is set here
 #     explicitly (confirmed: install-tree crash, build-tree fine).
-# Set an explicit RPATH on both platforms so `sqlite-ext` finds its shared
+# Set an explicit RPATH on both platforms so `semqlite` finds its shared
 # libs whether run from the build tree or after `cmake --install`.
 set(SEMEXT_RPATH_DIRS "${LLAMA_LIBRARY_DIR}")
 if(SEMEXT_ONNX)
     list(APPEND SEMEXT_RPATH_DIRS "${ORT_DIR}/lib")
 endif()
-set_target_properties(sqlite-ext PROPERTIES
+set_target_properties(semqlite PROPERTIES
     BUILD_RPATH   "${SEMEXT_RPATH_DIRS}"
     INSTALL_RPATH "${SEMEXT_RPATH_DIRS}"
 )
@@ -300,4 +311,4 @@ set_target_properties(sqlite-ext PROPERTIES
 # Install
 # ---------------------------------------------------------------------------
 set(CMAKE_INSTALL_PREFIX "/usr/local" CACHE PATH "Install prefix" FORCE)
-install(TARGETS sqlite-ext RUNTIME DESTINATION bin)
+install(TARGETS semqlite RUNTIME DESTINATION bin)

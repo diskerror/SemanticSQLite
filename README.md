@@ -1,6 +1,6 @@
 # SemanticSQLite
 
-`sqlite-ext` — the **real, unmodified SQLite CLI shell** (vendored amalgamation,
+`semqlite` — the **real, unmodified SQLite CLI shell** (vendored amalgamation,
 built straight from the official [sqlite/sqlite](https://github.com/sqlite/sqlite)
 mirror, forked as [diskerror/sqlite](https://github.com/diskerror/sqlite)),
 with two custom SQL functions baked in for experimenting on Ragger's semantic
@@ -66,9 +66,9 @@ their behavior depends on the mutable `semext_config` settings. Same blob
 inputs with a different `embedding_vector_type` produce different results.
 
 ```sql
--- Configure for Ragger's default: raw f16 blobs, no header
+-- Configure for Ragger's default: f16 blobs with 1-byte version prefix
 SELECT SEMEXT_SET('embedding_vector_type', 'f16');
-SELECT SEMEXT_SET('embedding_offset', '0');
+SELECT SEMEXT_SET('embedding_offset', '1');
 
 -- Most semantically similar summaries to summary_id=2
 SELECT s2.summary_id, EMBEDDING_SIM(s1.embedding, s2.embedding) AS sim
@@ -85,9 +85,6 @@ SELECT document_id, sim, text FROM (
 )
 WHERE sim > 0.7
 ORDER BY sim DESC LIMIT 10;
-
--- If your blobs have a 12-byte header (e.g. Ragger's vector_codec format)
-SELECT SEMEXT_SET('embedding_offset', '12');
 ```
 
 ### `EMBED(text)`
@@ -102,9 +99,8 @@ so you never re-type them — is a `semext_config` table plus two helper
 functions:
 
 ```sql
-SELECT SEMEXT_SET('embedding_model', '/path/to/nomic-embed-text-v1.5.Q4_K_M.gguf');
 SELECT SEMEXT_SET('embedding_model', '/path/to/all-MiniLM-L6-v2');
-SELECT SEMEXT_SET('embedding_dims', '512');            -- optional, 1..4096; omit/0 = model's native dim
+SELECT SEMEXT_SET('embedding_dims', '384');            -- optional, 1..4096; omit/0 = model's native dim
 SELECT SEMEXT_SET('embedding_vector_type', 'f16');     -- "f16" (default), "f32", "bf16", or "int8"
 SELECT SEMEXT_SET('embedding_offset', '0');            -- bytes of zero-filled header to prepend (default 0)
 SELECT SEMEXT_SET('embedding_skip_renorm', '0');       -- set to 1 to skip L2 normalization (testing)
@@ -114,7 +110,7 @@ SELECT SEMEXT_GET('embedding_model');   -- read back current setting
 SELECT EMBED('some text to embed');     -- BLOB, per the settings above
 ```
 
-Settings are set once per database and persist across `sqlite-ext` restarts
+Settings are set once per database and persist across `semqlite` restarts
 (they live in `semext_config`, auto-created on first use). The model itself
 is loaded lazily on first `EMBED()` call and cached for the process
 lifetime, keyed by path — calling `SEMEXT_SET('embedding_model', ...)` with
@@ -159,6 +155,33 @@ Measured examples (yours will differ if you use a different model):
 |---|---|---|---|
 | `llama` | nomic-embed-text-v1.5 (768-dim) | ~0.49 | ~0.01 |
 | `onnx` | all-MiniLM-L6-v2 (384-dim) | ~0.94 | ~0.88 |
+
+## Opening Ragger's database
+
+Copy-paste this block to configure `semqlite` for Ragger's `memories.db`.
+It reads all embedding settings directly from Ragger's `settings` table — no
+hardcoded values to keep in sync:
+
+```sql
+.open ~/.ragger/memories.db
+
+-- Load embedding config from Ragger's settings table.
+-- vector_type: f16 (default), f32, bf16, or int8
+-- dimensions:  384 for all-MiniLM-L6-v2, etc.
+-- model:       resolved model directory name
+-- offset:      always 1 (version byte); int8 scale is a 2-byte f16 suffix
+--              after the payload, matching SemanticSQLite's convention.
+SELECT SEMEXT_SET('embedding_vector_type',
+    (SELECT value FROM settings WHERE key = 'vector_type'));
+SELECT SEMEXT_SET('embedding_dims',
+    (SELECT value FROM settings WHERE key = 'dimensions'));
+SELECT SEMEXT_SET('embedding_model',
+    '~/.ragger/models/' || (SELECT value FROM settings WHERE key = 'embedding_model'));
+SELECT SEMEXT_SET('embedding_offset', '1');
+```
+
+After this, `EMBEDDING_SIM()`, `EMBEDDING_DIST()`, and `EMBED()` all work
+against Ragger's live data with no further configuration.
 
 ## Build
 
@@ -221,17 +244,17 @@ want the `llama` backend (skips the ONNX Runtime download entirely).
 mkdir build && cd build
 cmake ..                    # add -DSEMEXT_ONNX=OFF to skip ONNX Runtime
 make -j$(nproc)
-sudo cmake --install .       # installs sqlite-ext to /usr/local/bin
+sudo cmake --install .       # installs semqlite to /usr/local/bin
 ```
 
-Produces `sqlite-ext` — drop-in `sqlite3` replacement. Verified on macOS
+Produces `semqlite` — drop-in `sqlite3` replacement. Verified on macOS
 (Apple Silicon) and Debian 13 (x86_64), both `-DSEMEXT_ONNX=ON` and `OFF`.
 
 ## Usage
 
 ```bash
-sqlite-ext ~/.ragger/memories.db              # interactive shell
-sqlite-ext ~/.ragger/memories.db "SELECT ..."  # one-shot query
+semqlite ~/.ragger/memories.db              # interactive shell
+semqlite ~/.ragger/memories.db "SELECT ..."  # one-shot query
 ```
 
 ## Refreshing the vendored SQLite source
