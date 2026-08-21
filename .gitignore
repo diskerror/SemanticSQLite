@@ -13,4 +13,3 @@ CMakeDoxygenDefaults.cmake
 compile_commands.json
 .DS_Store
 .cache/
-vendor/onnxruntime/
