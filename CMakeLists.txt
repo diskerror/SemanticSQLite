@@ -236,31 +236,35 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# c_lib — DoubleMetaphone (vendored via symlink)
+# c_lib (FetchContent — uses local copy if FETCHCONTENT_SOURCE_DIR_C_LIB is
+# set, otherwise clones from GitHub)
 # ---------------------------------------------------------------------------
-set(C_LIB_DIR "${CMAKE_SOURCE_DIR}/vendor/c_lib")
-set_source_files_properties(
-    "${C_LIB_DIR}/DoubleMetaphone.cp"
-    "${C_LIB_DIR}/DoubleMetaphoneCapi.cp"
-    PROPERTIES LANGUAGE CXX
+include(FetchContent)
+FetchContent_Declare(c_lib
+    GIT_REPOSITORY https://github.com/diskerror/c_lib.git
+    GIT_TAG        master
 )
+FetchContent_MakeAvailable(c_lib)
 
 # ---------------------------------------------------------------------------
 # Our added functions: DMPHON(), EMBEDDING_SIM()/EMBEDDING_DIST(), EMBED()
 # ---------------------------------------------------------------------------
 add_library(semext STATIC
     src/ext_functions.c
-    "${C_LIB_DIR}/DoubleMetaphone.cp"
-    "${C_LIB_DIR}/DoubleMetaphoneCapi.cp"
     src/embed.c
     ${SEMEXT_ONNX_SOURCES}
 )
 target_include_directories(semext PUBLIC
     "${CMAKE_SOURCE_DIR}/include"
-    "${C_LIB_DIR}"
 )
 target_include_directories(semext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}" "${GGML_INCLUDE_DIR}" ${SEMEXT_ONNX_INCLUDES})
-target_link_libraries(semext PUBLIC sqlite3_amalgamation "${LLAMA_LIBRARY}" ${SEMEXT_ONNX_LIBS})
+target_link_libraries(semext PUBLIC
+    sqlite3_amalgamation
+    diskerror_double_metaphone
+    diskerror_embedding_codec
+    "${LLAMA_LIBRARY}"
+    ${SEMEXT_ONNX_LIBS}
+)
 if(SEMEXT_ONNX)
     target_compile_definitions(semext PUBLIC SEMEXT_HAVE_ONNX=1)
 endif()
