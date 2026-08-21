@@ -2,9 +2,9 @@
 
 `semqlite` — the **real, unmodified SQLite CLI shell** (vendored amalgamation,
 built straight from the official [sqlite/sqlite](https://github.com/sqlite/sqlite)
-mirror, forked as [diskerror/sqlite](https://github.com/diskerror/sqlite)),
-with two custom SQL functions baked in for experimenting on Ragger's semantic
-memory database.
+mirror, with four custom SQL functions baked in for experimenting on Ragger's semantic
+memory database. It assumes that for the most part embeddings are stored as a blob of the binary 
+vector. Other details of the vector encoding can be configured with a few commands.
 
 ## Why "real shell" and not a mini-REPL
 
@@ -259,8 +259,7 @@ semqlite ~/.ragger/memories.db "SELECT ..."  # one-shot query
 
 ## Refreshing the vendored SQLite source
 
-The amalgamation was generated from `diskerror/sqlite` (a fork of the
-official mirror) at the commit recorded in
+The amalgamation was generated from `sqlite/sqlite` at the commit recorded in
 `vendor/sqlite/UPSTREAM_COMMIT.txt`:
 
 ```bash
