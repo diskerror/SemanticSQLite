@@ -70,7 +70,7 @@ static std::string sanitize_utf8(const std::string &s) {
 extern "C" int semext_onnx_load(const char *model_dir, const char **errmsg) {
     *errmsg = nullptr;
     if (!model_dir || model_dir[0] == '\0') {
-        *errmsg = "embedding_model not set — call SEMEXT_SET('embedding_model', '/path/to/model_dir') first";
+        *errmsg = "embedding_model not set — call SEMQLITE_SET('embedding_model', '/path/to/model_dir') first";
         return -1;
     }
     // Already loaded?
@@ -85,11 +85,19 @@ extern "C" int semext_onnx_load(const char *model_dir, const char **errmsg) {
     g_onnx.n_embd = 0;
 
     fs::path dir(model_dir);
+    // HF-exported ONNX models are laid out inconsistently: some repos put
+    // model.onnx directly in the model dir, others nest it under onnx/
+    // (the ONNX export subfolder convention used by optimum/transformers.js).
+    // Try both.
     fs::path model_path = dir / "model.onnx";
+    if (!fs::exists(model_path)) {
+        fs::path nested = dir / "onnx" / "model.onnx";
+        if (fs::exists(nested)) model_path = nested;
+    }
     fs::path tok_path   = dir / "tokenizer.json";
 
     if (!fs::exists(model_path)) {
-        g_last_error = "model.onnx not found in the specified model directory";
+        g_last_error = "model.onnx not found (looked in model dir and model dir/onnx/)";
         *errmsg = g_last_error;
         return -1;
     }

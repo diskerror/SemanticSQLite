@@ -154,7 +154,7 @@ void semext_embed_shutdown(void) {
 int semext_llama_load(const char *path, const char **errmsg) {
     *errmsg = NULL;
     if (!path || path[0] == '\0') {
-        *errmsg = "embedding_model not set — call SEMEXT_SET('embedding_model', '/path/to/model.gguf') first";
+        *errmsg = "embedding_model not set — call SEMQLITE_SET('embedding_model', '/path/to/model.gguf') first";
         return -1;
     }
     if (g_cache.path && strcmp(g_cache.path, path) == 0 && g_cache.model) {
@@ -433,8 +433,8 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 int semext_register_embed(sqlite3 *db) {
     ensure_config_table(db);
     sqlite3_create_function(db, "EMBED", 1, SQLITE_UTF8, NULL, embed_func, NULL, NULL);
-    sqlite3_create_function(db, "SEMEXT_SET", 2, SQLITE_UTF8, NULL, semext_set_func, NULL, NULL);
-    sqlite3_create_function(db, "SEMEXT_GET", 1, SQLITE_UTF8, NULL, semext_get_func, NULL, NULL);
+    sqlite3_create_function(db, "SEMQLITE_SET", 2, SQLITE_UTF8, NULL, semext_set_func, NULL, NULL);
+    sqlite3_create_function(db, "SEMQLITE_GET", 1, SQLITE_UTF8, NULL, semext_get_func, NULL, NULL);
     // Cleanup is registered lazily in ensure_model_loaded(), after the
     // first model load — see the comment there for why atexit ORDER
     // matters here (must run before ggml's own Metal-backend cleanup).

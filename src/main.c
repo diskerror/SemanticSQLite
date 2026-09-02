@@ -1,6 +1,6 @@
 // main.c — sqlite-ext: the REAL SQLite CLI shell (unmodified upstream
 // vendor/sqlite/shell.c + sqlite3.c). Our custom functions (DMPHON,
-// EMBEDDING_SIM, EMBEDDING_DIST, EMBED, SEMEXT_SET/GET) are wired in via
+// EMBEDDING_SIM, EMBEDDING_DIST, EMBED, SEMQLITE_SET/GET) are wired in via
 // shell.c's own documented SQLITE_SHELL_EXTFUNCS extension point — see
 // include/shell_extfuncs_hook.h and CMakeLists.txt for how that's plumbed
 // through the build (-DSQLITE_SHELL_EXTFUNCS=SEMEXT -include hook.h).
@@ -42,7 +42,7 @@ static void print_semext_version(int include_sqlite_version) {
         printf("  SQLite %s %s\n", sqlite3_libversion(), sqlite3_sourceid());
     }
     printf("  Custom functions: DMPHON, EMBEDDING_SIM, EMBEDDING_DIST, "
-           "EMBED, SEMEXT_SET, SEMEXT_GET\n");
+           "EMBED, SEMQLITE_SET, SEMQLITE_GET\n");
     printf("  Embedding backends:"
 #ifdef SEMEXT_HAVE_ONNX
            " onnx (default),"

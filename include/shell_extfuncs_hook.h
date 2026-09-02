@@ -20,7 +20,7 @@
  * EMBEDDING_DIST() on the given connection. */
 extern int semext_register(sqlite3 *db, char **pzErrMsg, const void *pApi);
 
-/* Implemented in src/embed.c — registers EMBED(), SEMEXT_SET(), SEMEXT_GET()
+/* Implemented in src/embed.c — registers EMBED(), SEMQLITE_SET(), SEMQLITE_GET()
  * and ensures the semext_config table exists on the given connection. */
 extern int semext_register_embed(sqlite3 *db);
 

@@ -10,8 +10,10 @@
 extern "C" {
 #endif
 
-// Load an ONNX embedding model from `model_dir` (must contain model.onnx +
-// tokenizer.json). Returns 0 on success, -1 on failure with *errmsg set.
+// Load an ONNX embedding model from `model_dir`. Looks for model.onnx
+// directly in model_dir, then falls back to model_dir/onnx/model.onnx
+// (HF ONNX-export subfolder convention) — and tokenizer.json in model_dir.
+// Returns 0 on success, -1 on failure with *errmsg set.
 // Caches the model; calling with the same path is a no-op.
 int semext_onnx_load(const char *model_dir, const char **errmsg);
 

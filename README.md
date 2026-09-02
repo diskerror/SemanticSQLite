@@ -67,8 +67,8 @@ inputs with a different `embedding_vector_type` produce different results.
 
 ```sql
 -- Configure for Ragger's default: f16 blobs with 1-byte version prefix
-SELECT SEMEXT_SET('embedding_vector_type', 'f16');
-SELECT SEMEXT_SET('embedding_offset', '1');
+SELECT SEMQLITE_SET('embedding_vector_type', 'f16');
+SELECT SEMQLITE_SET('embedding_offset', '1');
 
 -- Most semantically similar summaries to summary_id=2
 SELECT s2.summary_id, EMBEDDING_SIM(s1.embedding, s2.embedding) AS sim
@@ -99,13 +99,13 @@ so you never re-type them — is a `semext_config` table plus two helper
 functions:
 
 ```sql
-SELECT SEMEXT_SET('embedding_model', '/path/to/all-MiniLM-L6-v2');
-SELECT SEMEXT_SET('embedding_dims', '384');            -- optional, 1..4096; omit/0 = model's native dim
-SELECT SEMEXT_SET('embedding_vector_type', 'f16');     -- "f16" (default), "f32", "bf16", or "int8"
-SELECT SEMEXT_SET('embedding_offset', '0');            -- bytes of zero-filled header to prepend (default 0)
-SELECT SEMEXT_SET('embedding_skip_renorm', '0');       -- set to 1 to skip L2 normalization (testing)
+SELECT SEMQLITE_SET('embedding_model', '/path/to/all-MiniLM-L12-v2');
+SELECT SEMQLITE_SET('embedding_dims', '384');            -- optional, 1..4096; omit/0 = model's native dim
+SELECT SEMQLITE_SET('embedding_vector_type', 'f16');     -- "f16" (default), "f32", "bf16", or "int8"
+SELECT SEMQLITE_SET('embedding_offset', '0');            -- bytes of zero-filled header to prepend (default 0)
+SELECT SEMQLITE_SET('embedding_skip_renorm', '0');       -- set to 1 to skip L2 normalization (testing)
 
-SELECT SEMEXT_GET('embedding_model');   -- read back current setting
+SELECT SEMQLITE_GET('embedding_model');   -- read back current setting
 
 SELECT EMBED('some text to embed');     -- BLOB, per the settings above
 ```
@@ -113,7 +113,7 @@ SELECT EMBED('some text to embed');     -- BLOB, per the settings above
 Settings are set once per database and persist across `semqlite` restarts
 (they live in `semext_config`, auto-created on first use). The model itself
 is loaded lazily on first `EMBED()` call and cached for the process
-lifetime, keyed by path — calling `SEMEXT_SET('embedding_model', ...)` with
+lifetime, keyed by path — calling `SEMQLITE_SET('embedding_model', ...)` with
 a different path swaps the cached model on the next call.
 
 `embedding_vector_type` controls the on-disk blob format:
@@ -167,17 +167,17 @@ hardcoded values to keep in sync:
 
 -- Load embedding config from Ragger's settings table.
 -- vector_type: f16 (default), f32, bf16, or int8
--- dimensions:  384 for all-MiniLM-L6-v2, etc.
 -- model:       resolved model directory name
--- offset:      always 1 (version byte); int8 scale is a 2-byte f16 suffix
+-- dimensions:  384 for all-MiniLM-L12-v2, etc.
+-- offset:      default 0; int8 scale is a 2-byte f16 suffix
 --              after the payload, matching SemanticSQLite's convention.
-SELECT SEMEXT_SET('embedding_vector_type',
+SELECT SEMQLITE_SET('embedding_vector_type',
     (SELECT value FROM settings WHERE key = 'vector_type'));
-SELECT SEMEXT_SET('embedding_dims',
+SELECT SEMQLITE_SET('embedding_dims',
     (SELECT value FROM settings WHERE key = 'dimensions'));
-SELECT SEMEXT_SET('embedding_model',
+SELECT SEMQLITE_SET('embedding_model',
     '~/.ragger/models/' || (SELECT value FROM settings WHERE key = 'embedding_model'));
-SELECT SEMEXT_SET('embedding_offset', '1');
+SELECT SEMQLITE_SET('embedding_offset', '1');
 ```
 
 After this, `EMBEDDING_SIM()`, `EMBEDDING_DIST()`, and `EMBED()` all work
@@ -223,10 +223,7 @@ Install `libllama` (for the `llama` embedding backend — see
 `embedding_embedder` above):
 
 ```bash
-# macOS (MacPorts)
-sudo port install llama.cpp
-
-# Debian/Linux — build from source
+# Build from source
 git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
 cmake -B build -DBUILD_SHARED_LIBS=ON -DGGML_VULKAN=ON  # or -DGGML_CUDA=ON
 cmake --build build -j$(nproc)
