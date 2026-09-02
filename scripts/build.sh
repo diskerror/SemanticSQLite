@@ -95,8 +95,8 @@ if [ -f ../CMakeUserPresets.json ]; then
 fi
 
 if [ ! -f Makefile ] || [ ../CMakeLists.txt -nt Makefile ]; then
-    echo "[+] Configuring (SEMEXT_ONNX=$ONNX_FLAG)..."
-    cmake .. $CMAKE_FLAGS $LOCAL_C_LIB -DSEMEXT_ONNX="$ONNX_FLAG"
+    echo "[+] Configuring (SEMQLITE_ONNX=$ONNX_FLAG)..."
+    cmake .. $CMAKE_FLAGS $LOCAL_C_LIB -DSEMQLITE_ONNX="$ONNX_FLAG"
 fi
 
 echo "[+] Building with $JOBS threads..."

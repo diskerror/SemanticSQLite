@@ -8,7 +8,7 @@
 //
 // Embedding blobs are decoded using c_lib's EmbeddingCodec (via the
 // EmbeddingCodecCapi C bridge, since this file is plain C) and the
-// semext_config settings:
+// semqlite_config settings:
 //   embedding_vector_type — "f16" (default), "f32", "bf16", or "int8"
 //   embedding_offset      — byte offset into the blob where the vector payload
 //                            starts (default 0; set to skip past any header —
@@ -30,13 +30,13 @@
 #include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
-/* Config helpers (same semext_config table that embed.c manages)       */
+/* Config helpers (same semqlite_config table that embed.c manages)       */
 /* ------------------------------------------------------------------ */
 static char *ext_config_get(sqlite3 *db, const char *key) {
     sqlite3_stmt *stmt = NULL;
     char *result = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT value FROM semext_config WHERE key = ?",
+            "SELECT value FROM semqlite_config WHERE key = ?",
             -1, &stmt, NULL) != SQLITE_OK) {
         return NULL;
     }
@@ -74,7 +74,7 @@ static enum vec_type parse_vec_type(const char *s) {
     return VT_F16;
 }
 
-// Read vtype + offset from semext_config (caches nothing — called per
+// Read vtype + offset from semqlite_config (caches nothing — called per
 // EMBEDDING_SIM/DIST invocation, but config reads are fast for a CLI tool).
 static void read_embed_config(sqlite3 *db, enum vec_type *vt, int *offset) {
     *vt = VT_F16;
@@ -177,7 +177,7 @@ static void embedding_dist_func(sqlite3_context *ctx, int argc, sqlite3_value **
 }
 
 /* ------------------------------------------------------------------ */
-int semext_register(sqlite3 *db, char **pzErrMsg, const void *pApi) {
+int semqlite_register(sqlite3 *db, char **pzErrMsg, const void *pApi) {
     (void)pzErrMsg;
     (void)pApi;
     sqlite3_create_function(db, "DMPHON", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC,

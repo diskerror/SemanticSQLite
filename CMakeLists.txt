@@ -17,7 +17,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ---------------------------------------------------------------------------
 # Build options
 # ---------------------------------------------------------------------------
-option(SEMEXT_ONNX "Build with ONNX Runtime embedding backend (default ON)" ON)
+option(SEMQLITE_ONNX "Build with ONNX Runtime embedding backend (default ON)" ON)
 
 # ---------------------------------------------------------------------------
 # Vendored SQLite: an UNMODIFIED upstream amalgamation (sqlite3.c/.h) and CLI
@@ -102,7 +102,7 @@ endif()
 target_compile_options(sqlite_shell_obj PRIVATE
     ${SHELL_DEFS}
     -Dmain=sqlite3_shell
-    -DSQLITE_SHELL_EXTFUNCS=SEMEXT
+    -DSQLITE_SHELL_EXTFUNCS=SEMQLITE
     -include
     "${CMAKE_SOURCE_DIR}/include/shell_extfuncs_hook.h"
 )
@@ -157,11 +157,11 @@ message(STATUS "ggml headers: ${GGML_INCLUDE_DIR}")
 # ---------------------------------------------------------------------------
 # ONNX Runtime + tokenizers-cpp (optional, for the ONNX embedding backend)
 # ---------------------------------------------------------------------------
-set(SEMEXT_ONNX_SOURCES "")
-set(SEMEXT_ONNX_LIBS "")
-set(SEMEXT_ONNX_INCLUDES "")
+set(SEMQLITE_ONNX_SOURCES "")
+set(SEMQLITE_ONNX_LIBS "")
+set(SEMQLITE_ONNX_INCLUDES "")
 
-if(SEMEXT_ONNX)
+if(SEMQLITE_ONNX)
     # ---- ONNX Runtime (vendored or auto-fetched, same as Ragger) ----
     set(ORT_VERSION "1.24.4" CACHE STRING "ONNX Runtime version")
     if(APPLE)
@@ -219,7 +219,7 @@ if(SEMEXT_ONNX)
         message(FATAL_ERROR "vendor/tokenizers-cpp not found. Copy or symlink from Ragger/vendor/tokenizers-cpp.")
     endif()
     # EXCLUDE_FROM_ALL: tokenizers-cpp (and its own vendored deps —
-    # msgpack-cxx, sentencepiece) still get BUILT because semext links
+    # msgpack-cxx, sentencepiece) still get BUILT because semqlite_ext links
     # against tokenizers_cpp, but their own install() rules are skipped.
     # Without this, `cmake --install` walks the whole subdirectory graph
     # and installs msgpack-cxx's headers/cmake-config files into
@@ -227,12 +227,12 @@ if(SEMEXT_ONNX)
     # or exposes; only the semqlite binary itself should be installed.
     add_subdirectory("${TOKENIZERS_VENDOR}" EXCLUDE_FROM_ALL)
 
-    set(SEMEXT_ONNX_SOURCES src/embed_onnx.cpp)
-    list(APPEND SEMEXT_ONNX_LIBS onnxruntime tokenizers_cpp)
-    list(APPEND SEMEXT_ONNX_INCLUDES "${ORT_DIR}/include")
+    set(SEMQLITE_ONNX_SOURCES src/embed_onnx.cpp)
+    list(APPEND SEMQLITE_ONNX_LIBS onnxruntime tokenizers_cpp)
+    list(APPEND SEMQLITE_ONNX_INCLUDES "${ORT_DIR}/include")
     message(STATUS "ONNX embedding backend: enabled")
 else()
-    message(STATUS "ONNX embedding backend: disabled (-DSEMEXT_ONNX=OFF)")
+    message(STATUS "ONNX embedding backend: disabled (-DSEMQLITE_ONNX=OFF)")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -249,28 +249,28 @@ FetchContent_MakeAvailable(c_lib)
 # ---------------------------------------------------------------------------
 # Our added functions: DMPHON(), EMBEDDING_SIM()/EMBEDDING_DIST(), EMBED()
 # ---------------------------------------------------------------------------
-add_library(semext STATIC
+add_library(semqlite_ext STATIC
     src/ext_functions.c
     src/embed.c
-    ${SEMEXT_ONNX_SOURCES}
+    ${SEMQLITE_ONNX_SOURCES}
 )
-target_include_directories(semext PUBLIC
+target_include_directories(semqlite_ext PUBLIC
     "${CMAKE_SOURCE_DIR}/include"
 )
-target_include_directories(semext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}" "${GGML_INCLUDE_DIR}" ${SEMEXT_ONNX_INCLUDES})
-target_link_libraries(semext PUBLIC
+target_include_directories(semqlite_ext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}" "${GGML_INCLUDE_DIR}" ${SEMQLITE_ONNX_INCLUDES})
+target_link_libraries(semqlite_ext PUBLIC
     sqlite3_amalgamation
     diskerror_double_metaphone
     diskerror_embedding_codec
     "${LLAMA_LIBRARY}"
-    ${SEMEXT_ONNX_LIBS}
+    ${SEMQLITE_ONNX_LIBS}
 )
-if(SEMEXT_ONNX)
-    target_compile_definitions(semext PUBLIC SEMEXT_HAVE_ONNX=1)
+if(SEMQLITE_ONNX)
+    target_compile_definitions(semqlite_ext PUBLIC SEMQLITE_HAVE_ONNX=1)
 endif()
 
 # ---------------------------------------------------------------------------
-# semqlite executable: our tiny main() pre-registers semext's functions
+# semqlite executable: our tiny main() pre-registers semqlite_ext's functions
 # via sqlite3_auto_extension(), then hands off to the real shell.
 # ---------------------------------------------------------------------------
 add_executable(semqlite
@@ -278,13 +278,13 @@ add_executable(semqlite
     $<TARGET_OBJECTS:sqlite_shell_obj>
 )
 target_include_directories(semqlite PRIVATE "${SQLITE_VENDOR_DIR}")
-target_link_libraries(semqlite PRIVATE semext sqlite3_amalgamation)
+target_link_libraries(semqlite PRIVATE semqlite_ext sqlite3_amalgamation)
 if(EDITLINE_LIBRARY AND EDITLINE_INCLUDE_DIR)
     target_link_libraries(semqlite PRIVATE "${EDITLINE_LIBRARY}")
 endif()
-target_compile_definitions(semqlite PRIVATE SEMEXT_VERSION="${PROJECT_VERSION}")
-if(SEMEXT_ONNX)
-    target_compile_definitions(semqlite PRIVATE SEMEXT_HAVE_ONNX=1)
+target_compile_definitions(semqlite PRIVATE SEMQLITE_VERSION="${PROJECT_VERSION}")
+if(SEMQLITE_ONNX)
+    target_compile_definitions(semqlite PRIVATE SEMQLITE_HAVE_ONNX=1)
 endif()
 
 # Shared libs found via full path (libllama.so/.dylib,
@@ -302,13 +302,13 @@ endif()
 #     explicitly (confirmed: install-tree crash, build-tree fine).
 # Set an explicit RPATH on both platforms so `semqlite` finds its shared
 # libs whether run from the build tree or after `cmake --install`.
-set(SEMEXT_RPATH_DIRS "${LLAMA_LIBRARY_DIR}")
-if(SEMEXT_ONNX)
-    list(APPEND SEMEXT_RPATH_DIRS "${ORT_DIR}/lib")
+set(SEMQLITE_RPATH_DIRS "${LLAMA_LIBRARY_DIR}")
+if(SEMQLITE_ONNX)
+    list(APPEND SEMQLITE_RPATH_DIRS "${ORT_DIR}/lib")
 endif()
 set_target_properties(semqlite PROPERTIES
-    BUILD_RPATH   "${SEMEXT_RPATH_DIRS}"
-    INSTALL_RPATH "${SEMEXT_RPATH_DIRS}"
+    BUILD_RPATH   "${SEMQLITE_RPATH_DIRS}"
+    INSTALL_RPATH "${SEMQLITE_RPATH_DIRS}"
 )
 
 # ---------------------------------------------------------------------------

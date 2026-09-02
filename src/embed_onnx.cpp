@@ -67,7 +67,7 @@ static std::string sanitize_utf8(const std::string &s) {
 }
 
 // -----------------------------------------------------------------------
-extern "C" int semext_onnx_load(const char *model_dir, const char **errmsg) {
+extern "C" int semqlite_onnx_load(const char *model_dir, const char **errmsg) {
     *errmsg = nullptr;
     if (!model_dir || model_dir[0] == '\0') {
         *errmsg = "embedding_model not set — call SEMQLITE_SET('embedding_model', '/path/to/model_dir') first";
@@ -124,7 +124,7 @@ extern "C" int semext_onnx_load(const char *model_dir, const char **errmsg) {
         }
 
         // Load ONNX model
-        auto env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "semext");
+        auto env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "semqlite");
         Ort::SessionOptions opts;
         auto session = std::make_unique<Ort::Session>(*env, model_path.c_str(), opts);
 
@@ -166,7 +166,7 @@ extern "C" int semext_onnx_load(const char *model_dir, const char **errmsg) {
     }
 }
 
-extern "C" int semext_onnx_encode(const char *text, int text_len,
+extern "C" int semqlite_onnx_encode(const char *text, int text_len,
                                    float **out, int *out_dims) {
     *out = nullptr;
     *out_dims = 0;
@@ -234,7 +234,7 @@ extern "C" int semext_onnx_encode(const char *text, int text_len,
     }
 }
 
-extern "C" void semext_onnx_shutdown(void) {
+extern "C" void semqlite_onnx_shutdown(void) {
     g_onnx.session.reset();
     g_onnx.tokenizer.reset();
     g_onnx.env.reset();

@@ -47,7 +47,7 @@ SELECT DMPHON('hello', 2);       -- 'HL'  (only one code exists, so mode 2 == mo
 
 ### `EMBEDDING_SIM(blob1, blob2)` / `EMBEDDING_DIST(blob1, blob2)`
 Cosine similarity / cosine distance between two embedding BLOBs.
-The storage dtype and byte layout are controlled by `semext_config` settings:
+The storage dtype and byte layout are controlled by `semqlite_config` settings:
 
 | key | values | default | purpose |
 |-----|--------|---------|---------|
@@ -62,7 +62,7 @@ IEEE f16 dequantization scale (scale = max|x| / 127). If the scale suffix is
 absent, a fallback of 1/127 is used (correct for unit-norm vectors).
 
 **Note:** these functions are **not** marked `SQLITE_DETERMINISTIC` because
-their behavior depends on the mutable `semext_config` settings. Same blob
+their behavior depends on the mutable `semqlite_config` settings. Same blob
 inputs with a different `embedding_vector_type` produce different results.
 
 ```sql
@@ -95,7 +95,7 @@ BLOB — same shape as embeddings already stored in Ragger's DB.
 SQLite extensions can't actually define new `PRAGMA`s (the syntax is
 hardcoded into the core parser, not an extension point like functions/vtabs
 are), so the closest equivalent — settings that persist in the database file
-so you never re-type them — is a `semext_config` table plus two helper
+so you never re-type them — is a `semqlite_config` table plus two helper
 functions:
 
 ```sql
@@ -111,7 +111,7 @@ SELECT EMBED('some text to embed');     -- BLOB, per the settings above
 ```
 
 Settings are set once per database and persist across `semqlite` restarts
-(they live in `semext_config`, auto-created on first use). The model itself
+(they live in `semqlite_config`, auto-created on first use). The model itself
 is loaded lazily on first `EMBED()` call and cached for the process
 lifetime, keyed by path — calling `SEMQLITE_SET('embedding_model', ...)` with
 a different path swaps the cached model on the next call.
@@ -192,9 +192,9 @@ against Ragger's live data with no further configuration.
 | CMake ≥ 3.24 | everything | |
 | C11 + C++20 compiler | everything | GCC 14 / Clang tested |
 | `git` | everything | for the submodule below |
-| **Rust toolchain (`cargo`)** | `-DSEMEXT_ONNX=ON` (default) | `tokenizers-cpp`'s HuggingFace backend is a Rust crate built via `cargo build`, invoked automatically by CMake. **Not optional** unless you build with `-DSEMEXT_ONNX=OFF`. See install command below. |
+| **Rust toolchain (`cargo`)** | `-DSEMQLITE_ONNX=ON` (default) | `tokenizers-cpp`'s HuggingFace backend is a Rust crate built via `cargo build`, invoked automatically by CMake. **Not optional** unless you build with `-DSEMQLITE_ONNX=OFF`. See install command below. |
 | `libllama` (llama.cpp) | `embedding_embedder='llama'` | MacPorts on macOS, build-from-source on Linux — see below. Not needed for the ONNX backend, but the CMake always looks for it (both backends can coexist in one binary). |
-| Internet access (first build only) | `-DSEMEXT_ONNX=ON` | ONNX Runtime is auto-fetched from GitHub releases; cached under `build/_deps/` after the first configure. |
+| Internet access (first build only) | `-DSEMQLITE_ONNX=ON` | ONNX Runtime is auto-fetched from GitHub releases; cached under `build/_deps/` after the first configure. |
 | `libedit` (optional) | interactive shell usage | Gives the shell arrow-key/history line editing. Without it, arrow keys print raw escape sequences and there's no command history — the shell still works, it's just unpleasant to use interactively. macOS (MacPorts): `sudo port install libedit`. Debian/Linux: `sudo apt install libedit-dev`. Auto-detected; silently skipped if not found. |
 
 If a requirement is missing, CMake usually fails at build time with an
@@ -235,7 +235,7 @@ The ONNX embedding backend (default) needs no separate install — ONNX
 Runtime is auto-fetched at configure time for your platform (macOS
 arm64/x86_64, Linux x86_64/aarch64), and `tokenizers-cpp` comes from the
 submodule pulled above. Disable it with `--no-onnx` (build script) or
-`-DSEMEXT_ONNX=OFF` (manual cmake) if you only want the `llama` backend.
+`-DSEMQLITE_ONNX=OFF` (manual cmake) if you only want the `llama` backend.
 
 [c_lib](https://github.com/diskerror/c_lib) (shared C++ utilities) is
 auto-fetched from GitHub at configure time via CMake FetchContent.
@@ -276,7 +276,7 @@ sudo cmake --install build
 ```
 
 Produces `semqlite` — drop-in `sqlite3` replacement. Verified on macOS
-(Apple Silicon) and Debian 13 (x86_64), both `-DSEMEXT_ONNX=ON` and `OFF`.
+(Apple Silicon) and Debian 13 (x86_64), both `-DSEMQLITE_ONNX=ON` and `OFF`.
 
 ## Usage
 

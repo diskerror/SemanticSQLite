@@ -21,12 +21,12 @@
 //   embedding_skip_renorm  — "1"/"true"/"yes" to skip L2 normalization
 //
 // The model is loaded lazily on first EMBED() call and cached for the
-// process lifetime, keyed by path — calling SEMEXT_SET('embedding_model', X)
+// process lifetime, keyed by path — calling SEMQLITE_SET('embedding_model', X)
 // with a different path swaps the cached model on the next EMBED() call.
 
 #include "embed.h"
 #include "embed_llama.h"
-#ifdef SEMEXT_HAVE_ONNX
+#ifdef SEMQLITE_HAVE_ONNX
 #include "embed_onnx.h"
 #endif
 #include "EmbeddingCodecCapi.h"
@@ -41,11 +41,11 @@
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
-/* semext_config table — key/value store standing in for PRAGMAs       */
+/* semqlite_config table — key/value store standing in for PRAGMAs       */
 /* ------------------------------------------------------------------ */
 static int ensure_config_table(sqlite3 *db) {
     return sqlite3_exec(db,
-        "CREATE TABLE IF NOT EXISTS semext_config ("
+        "CREATE TABLE IF NOT EXISTS semqlite_config ("
         "  key TEXT PRIMARY KEY,"
         "  value TEXT"
         ")", NULL, NULL, NULL);
@@ -56,7 +56,7 @@ static int ensure_config_table(sqlite3 *db) {
 static char *config_get(sqlite3 *db, const char *key) {
     sqlite3_stmt *stmt = NULL;
     char *result = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT value FROM semext_config WHERE key = ?", -1, &stmt, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, "SELECT value FROM semqlite_config WHERE key = ?", -1, &stmt, NULL) != SQLITE_OK) {
         return NULL;
     }
     sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
@@ -76,7 +76,7 @@ static void config_set(sqlite3 *db, const char *key, const char *value) {
     ensure_config_table(db);
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
-            "INSERT INTO semext_config (key, value) VALUES (?, ?) "
+            "INSERT INTO semqlite_config (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             -1, &stmt, NULL) != SQLITE_OK) {
         return;
@@ -87,9 +87,9 @@ static void config_set(sqlite3 *db, const char *key, const char *value) {
     sqlite3_finalize(stmt);
 }
 
-static void semext_set_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+static void semqlite_set_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 2 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
-        sqlite3_result_error(ctx, "SEMEXT_SET(key, value): key required", -1);
+        sqlite3_result_error(ctx, "SEMQLITE_SET(key, value): key required", -1);
         return;
     }
     sqlite3 *db = sqlite3_context_db_handle(ctx);
@@ -100,7 +100,7 @@ static void semext_set_func(sqlite3_context *ctx, int argc, sqlite3_value **argv
     sqlite3_result_text(ctx, val, -1, SQLITE_TRANSIENT);
 }
 
-static void semext_get_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+static void semqlite_get_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
         sqlite3_result_null(ctx);
         return;
@@ -136,7 +136,7 @@ static void unload_cached_model(void) {
     g_cache.n_embd = 0;
 }
 
-void semext_llama_shutdown(void) {
+void semqlite_llama_shutdown(void) {
     unload_cached_model();
     if (g_backend_initialized) {
         llama_backend_free();
@@ -144,14 +144,14 @@ void semext_llama_shutdown(void) {
     }
 }
 
-void semext_embed_shutdown(void) {
-    semext_llama_shutdown();
-#ifdef SEMEXT_HAVE_ONNX
-    semext_onnx_shutdown();
+void semqlite_embed_shutdown(void) {
+    semqlite_llama_shutdown();
+#ifdef SEMQLITE_HAVE_ONNX
+    semqlite_onnx_shutdown();
 #endif
 }
 
-int semext_llama_load(const char *path, const char **errmsg) {
+int semqlite_llama_load(const char *path, const char **errmsg) {
     *errmsg = NULL;
     if (!path || path[0] == '\0') {
         *errmsg = "embedding_model not set — call SEMQLITE_SET('embedding_model', '/path/to/model.gguf') first";
@@ -201,7 +201,7 @@ int semext_llama_load(const char *path, const char **errmsg) {
     return 0;
 }
 
-int semext_llama_encode(const char *text, int text_len,
+int semqlite_llama_encode(const char *text, int text_len,
                         float **out, int *out_dims) {
     *out = NULL;
     *out_dims = 0;
@@ -271,7 +271,7 @@ enum embed_backend { EB_ONNX = 0, EB_LLAMA = 1 };
 
 static enum embed_backend parse_backend(const char *s) {
     if (!s || s[0] == '\0') {
-#ifdef SEMEXT_HAVE_ONNX
+#ifdef SEMQLITE_HAVE_ONNX
         return EB_ONNX;
 #else
         return EB_LLAMA;
@@ -283,7 +283,7 @@ static enum embed_backend parse_backend(const char *s) {
 }
 
 /* ------------------------------------------------------------------ */
-/* EMBED(text) -> BLOB embedding, per semext_config settings           */
+/* EMBED(text) -> BLOB embedding, per semqlite_config settings           */
 /* ------------------------------------------------------------------ */
 static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
@@ -310,14 +310,14 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     const char *errmsg = NULL;
     int load_rc;
     switch (backend) {
-#ifdef SEMEXT_HAVE_ONNX
+#ifdef SEMQLITE_HAVE_ONNX
         case EB_ONNX:
-            load_rc = semext_onnx_load(model_path, &errmsg);
+            load_rc = semqlite_onnx_load(model_path, &errmsg);
             break;
 #endif
         case EB_LLAMA:
         default:
-            load_rc = semext_llama_load(model_path, &errmsg);
+            load_rc = semqlite_llama_load(model_path, &errmsg);
             break;
     }
     if (load_rc != 0) {
@@ -331,13 +331,13 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 
     // Ensure cleanup runs at exit for whichever backend(s) were loaded.
     // Must be registered AFTER any llama model load (atexit LIFO ordering
-    // vs ggml's Metal cleanup — see the comment in semext_llama_load).
+    // vs ggml's Metal cleanup — see the comment in semqlite_llama_load).
     // For ONNX-only usage, the llama backend was never touched so there's
     // no ggml ordering constraint, but we still need to free the ONNX env.
     {
         static int atexit_registered = 0;
         if (!atexit_registered) {
-            atexit(semext_embed_shutdown);
+            atexit(semqlite_embed_shutdown);
             atexit_registered = 1;
         }
     }
@@ -374,14 +374,14 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     int raw_dims = 0;
     int enc_rc;
     switch (backend) {
-#ifdef SEMEXT_HAVE_ONNX
+#ifdef SEMQLITE_HAVE_ONNX
         case EB_ONNX:
-            enc_rc = semext_onnx_encode(text, text_len, &raw_emb, &raw_dims);
+            enc_rc = semqlite_onnx_encode(text, text_len, &raw_emb, &raw_dims);
             break;
 #endif
         case EB_LLAMA:
         default:
-            enc_rc = semext_llama_encode(text, text_len, &raw_emb, &raw_dims);
+            enc_rc = semqlite_llama_encode(text, text_len, &raw_emb, &raw_dims);
             break;
     }
     if (enc_rc != 0 || !raw_emb) {
@@ -430,11 +430,11 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 }
 
 /* ------------------------------------------------------------------ */
-int semext_register_embed(sqlite3 *db) {
+int semqlite_register_embed(sqlite3 *db) {
     ensure_config_table(db);
     sqlite3_create_function(db, "EMBED", 1, SQLITE_UTF8, NULL, embed_func, NULL, NULL);
-    sqlite3_create_function(db, "SEMQLITE_SET", 2, SQLITE_UTF8, NULL, semext_set_func, NULL, NULL);
-    sqlite3_create_function(db, "SEMQLITE_GET", 1, SQLITE_UTF8, NULL, semext_get_func, NULL, NULL);
+    sqlite3_create_function(db, "SEMQLITE_SET", 2, SQLITE_UTF8, NULL, semqlite_set_func, NULL, NULL);
+    sqlite3_create_function(db, "SEMQLITE_GET", 1, SQLITE_UTF8, NULL, semqlite_get_func, NULL, NULL);
     // Cleanup is registered lazily in ensure_model_loaded(), after the
     // first model load — see the comment there for why atexit ORDER
     // matters here (must run before ggml's own Metal-backend cleanup).

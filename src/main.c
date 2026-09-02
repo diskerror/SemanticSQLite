@@ -3,7 +3,7 @@
 // EMBEDDING_SIM, EMBEDDING_DIST, EMBED, SEMQLITE_SET/GET) are wired in via
 // shell.c's own documented SQLITE_SHELL_EXTFUNCS extension point — see
 // include/shell_extfuncs_hook.h and CMakeLists.txt for how that's plumbed
-// through the build (-DSQLITE_SHELL_EXTFUNCS=SEMEXT -include hook.h).
+// through the build (-DSQLITE_SHELL_EXTFUNCS=SEMQLITE -include hook.h).
 //
 // shell.c's own header comment documents `#define main sqlite3_shell` as
 // the supported way for "other projects that use shell.c as a subroutine"
@@ -13,15 +13,15 @@
 //
 // -version / --version: shell.c's own "-version" flag prints only the
 // vendored SQLite library version and exits (see shell.c's usage() /
-// "-version" handling) — it has no way to know about semext's own
+// "-version" handling) — it has no way to know about semqlite's own
 // version or which optional backends were compiled in. We intercept
 // -version/--version HERE, before handing off to sqlite3_shell(), print
-// SQLite's version plus semext's own build info, and exit — without
+// SQLite's version plus semqlite's own build info, and exit — without
 // touching shell.c.
 //
 // No arguments at all (interactive mode, no filename/SQL/options): we
 // also print the same banner before handing off to sqlite3_shell(), so
-// launching the shell interactively shows what you're running (semext
+// launching the shell interactively shows what you're running (semqlite
 // version + backends) in addition to upstream's own SQLite version
 // banner that shell.c prints right after.
 
@@ -29,22 +29,22 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifndef SEMEXT_VERSION
-#define SEMEXT_VERSION "0.1.0"
+#ifndef SEMQLITE_VERSION
+#define SEMQLITE_VERSION "0.1.0"
 #endif
 
 // The shell's real main(), renamed via -Dmain=sqlite3_shell at compile time.
 extern int sqlite3_shell(int argc, char **argv);
 
-static void print_semext_version(int include_sqlite_version) {
-    printf("sqlite-ext %s (SemanticSQLite)\n", SEMEXT_VERSION);
+static void print_semqlite_version(int include_sqlite_version) {
+    printf("sqlite-ext %s (SemanticSQLite)\n", SEMQLITE_VERSION);
     if (include_sqlite_version) {
         printf("  SQLite %s %s\n", sqlite3_libversion(), sqlite3_sourceid());
     }
     printf("  Custom functions: DMPHON, EMBEDDING_SIM, EMBEDDING_DIST, "
            "EMBED, SEMQLITE_SET, SEMQLITE_GET\n");
     printf("  Embedding backends:"
-#ifdef SEMEXT_HAVE_ONNX
+#ifdef SEMQLITE_HAVE_ONNX
            " onnx (default),"
 #endif
            " llama\n");
@@ -53,7 +53,7 @@ static void print_semext_version(int include_sqlite_version) {
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-version") == 0 || strcmp(argv[i], "--version") == 0) {
-            print_semext_version(1);
+            print_semqlite_version(1);
             return 0;
         }
     }
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
         // banner immediately after this returns (gated on
         // stdin_is_interactive, no suppress flag available), so including
         // it here would just duplicate the same line twice.
-        print_semext_version(0);
+        print_semqlite_version(0);
         printf("\n");
     }
     return sqlite3_shell(argc, argv);
