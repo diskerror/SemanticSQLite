@@ -29,6 +29,7 @@
 #ifdef SEMEXT_HAVE_ONNX
 #include "embed_onnx.h"
 #endif
+#include "EmbeddingCodecCapi.h"
 
 #include <llama.h>
 #include <sqlite3.h>
@@ -247,44 +248,8 @@ int semext_llama_encode(const char *text, int text_len,
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Scalar encode helpers (portable C, no compiler _Float16 dependency) */
-/* ------------------------------------------------------------------ */
-static uint16_t f32_to_f16(float f) {
-    uint32_t x;
-    memcpy(&x, &f, sizeof(x));
-    uint32_t sign = (x >> 16) & 0x8000u;
-    int32_t  exp  = (int32_t)((x >> 23) & 0xFF) - 127 + 15;
-    uint32_t mant = x & 0x7FFFFFu;
-
-    if (exp <= 0) {
-        return (uint16_t)sign;  // underflow to zero (signed)
-    } else if (exp >= 31) {
-        return (uint16_t)(sign | 0x7C00u);  // overflow to inf
-    }
-    return (uint16_t)(sign | ((uint32_t)exp << 10) | (mant >> 13));
-}
-
-static uint16_t f32_to_bf16(float f) {
-    uint32_t x;
-    memcpy(&x, &f, sizeof(x));
-    // NaN: preserve (set a mantissa bit in the top half).
-    if ((x & 0x7fffffffu) > 0x7f800000u) {
-        return (uint16_t)((x >> 16) | 0x0040u);
-    }
-    // Round-to-nearest-even.
-    uint32_t lsb = (x >> 16) & 1u;
-    x += 0x7fffu + lsb;
-    return (uint16_t)(x >> 16);
-}
-
-// Store a uint16_t as two little-endian bytes.
-static void put_u16le(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v & 0xff);
-    p[1] = (uint8_t)((v >> 8) & 0xff);
-}
-
-// Vector type identifiers — must match ext_functions.c's enum.
+// Vector type identifiers — must match ext_functions.c's enum and
+// diskerror_vector_type in c_lib's EmbeddingCodecCapi.h.
 enum embed_vec_type { EVT_F32 = 0, EVT_F16 = 1, EVT_BF16 = 2, EVT_INT8 = 3 };
 
 static enum embed_vec_type parse_embed_vec_type(const char *s) {
@@ -452,56 +417,16 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     }
     free(raw_emb);
 
-    // Compute total blob size: offset header + payload.
-    int payload_bytes;
-    switch (vtype) {
-        case EVT_F32:  payload_bytes = out_dims * 4; break;
-        case EVT_BF16: payload_bytes = out_dims * 2; break;
-        case EVT_INT8: payload_bytes = out_dims + 2; break;  // +2 for f16 scale
-        default:       payload_bytes = out_dims * 2; break;   // EVT_F16
-    }
-    int total = blob_offset + payload_bytes;
-    uint8_t *blob = (uint8_t *)calloc(1, (size_t)total);  // calloc zeros offset region
-    if (!blob) { free(normed); sqlite3_result_error_nomem(ctx); return; }
-
-    uint8_t *payload = blob + blob_offset;
-    switch (vtype) {
-        case EVT_F32:
-            memcpy(payload, normed, sizeof(float) * (size_t)out_dims);
-            break;
-        case EVT_F16:
-            for (int i = 0; i < out_dims; i++)
-                put_u16le(payload + i * 2, f32_to_f16(normed[i]));
-            break;
-        case EVT_BF16:
-            for (int i = 0; i < out_dims; i++)
-                put_u16le(payload + i * 2, f32_to_bf16(normed[i]));
-            break;
-        case EVT_INT8: {
-            // Symmetric per-vector int8: scale = max|x|/127, stored as f16
-            // in the last 2 bytes of the payload.
-            float maxabs = 0.0f;
-            for (int i = 0; i < out_dims; i++) {
-                float a = normed[i] < 0 ? -normed[i] : normed[i];
-                if (a > maxabs) maxabs = a;
-            }
-            float scale = (maxabs > 0.0f) ? (maxabs / 127.0f) : (1.0f / 127.0f);
-            float inv_scale = 1.0f / scale;
-            for (int i = 0; i < out_dims; i++) {
-                float q = normed[i] * inv_scale;
-                if (q > 127.0f) q = 127.0f;
-                if (q < -127.0f) q = -127.0f;
-                int qi = (int)(q + (q >= 0 ? 0.5f : -0.5f));
-                payload[i] = (uint8_t)(int8_t)qi;
-            }
-            put_u16le(payload + out_dims, f32_to_f16(scale));
-            break;
-        }
-    }
+    // Encode into the on-disk blob (offset header + dtype-formatted
+    // payload) via c_lib's EmbeddingCodec, through the C bridge.
+    int total = 0;
+    uint8_t *blob = diskerror_embedding_encode((int)vtype, blob_offset,
+                                               normed, out_dims, &total);
+    free(normed);
+    if (!blob) { sqlite3_result_error_nomem(ctx); return; }
 
     sqlite3_result_blob(ctx, blob, total, SQLITE_TRANSIENT);
     free(blob);
-    free(normed);
 }
 
 /* ------------------------------------------------------------------ */
