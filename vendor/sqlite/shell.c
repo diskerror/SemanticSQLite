@@ -37857,16 +37857,23 @@ static int runOneSqlLine(
       zErrorTail = zErrMsg;
     }
     if( zFilename || !stdin_is_interactive ){
-      if( cli_strcmp(zFilename,"cmdline")==0 ){
-        sqlite3_str_appendf(pPrefix,
-                  "%s in %r command line argument:", zErrorType, startline);
-      }else if( cli_strcmp(zFilename,"<stdin>")==0 ){
-        sqlite3_str_appendf(pPrefix,
-                  "%s near line %d:", zErrorType, startline);
+      /* SEMQLITE PATCH: compiler-style "loc:line:" prefix (basename only, no
+      ** full path) instead of the upstream "near line N of /full/path:" form.
+      ** See vendor/sqlite/PATCHES.md — re-apply after any re-vendor. */
+      const char *zLoc;   /* short source label: basename, "stdin", or "cmdline" */
+      if( zFilename==0 || cli_strcmp(zFilename,"<stdin>")==0 ){
+        zLoc = "stdin";
+      }else if( cli_strcmp(zFilename,"cmdline")==0 ){
+        zLoc = "cmdline";
       }else{
-        sqlite3_str_appendf(pPrefix,
-                  "%s near line %d of %s:", zErrorType, startline, zFilename);
+        const char *zSlash = strrchr(zFilename, '/');
+#if defined(_WIN32)
+        const char *zBk = strrchr(zFilename, '\\');
+        if( zBk && (!zSlash || zBk>zSlash) ) zSlash = zBk;
+#endif
+        zLoc = zSlash ? zSlash+1 : zFilename;
       }
+      sqlite3_str_appendf(pPrefix, "%s:%d:", zLoc, startline);
     }else{
       sqlite3_str_appendf(pPrefix, "%s:", zErrorType);
     }
