@@ -99,7 +99,10 @@ so you never re-type them — is a `semqlite_config` table plus two helper
 functions:
 
 ```sql
-SELECT SEMQLITE_SET('embedding_model', '/path/to/all-MiniLM-L12-v2');
+SELECT SEMQLITE_SET('embedding_model', '/path/to/all-MiniLM-L12-v2'); -- or,
+SELECT SEMQLITE_SET('embedding_model', (SELECT CONCAT('~/.ragger/models/', value) 
+    FROM settings WHERE key = 'embedding_model'));
+
 SELECT SEMQLITE_SET('embedding_dims', '384');            -- optional, 1..4096; omit/0 = model's native dim
 SELECT SEMQLITE_SET('embedding_vector_type', 'f16');     -- "f16" (default), "f32", "bf16", or "int8"
 SELECT SEMQLITE_SET('embedding_offset', '0');            -- bytes of zero-filled header to prepend (default 0)
