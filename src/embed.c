@@ -285,6 +285,27 @@ static enum embed_backend parse_backend(const char *s) {
 /* ------------------------------------------------------------------ */
 /* EMBED(text) -> BLOB embedding, per semqlite_config settings           */
 /* ------------------------------------------------------------------ */
+
+/* Expand a leading "~/" or bare "~" to $HOME. Returns a newly malloc'd
+ * string the caller must free. On any miss (no leading tilde, $HOME unset,
+ * or allocation failure) returns a plain strdup of the input, so the caller
+ * can always free() the result uniformly. A literal "~" not followed by '/'
+ * (e.g. "~user") is left untouched — we don't resolve other users' homes. */
+static char *expand_tilde(const char *path) {
+    if (!path) return NULL;
+    if (path[0] != '~' || (path[1] != '/' && path[1] != '\0'))
+        return strdup(path);
+    const char *home = getenv("HOME");
+    if (!home || home[0] == '\0')
+        return strdup(path);
+    const char *rest = path + 1;               /* the part after '~' */
+    size_t need = strlen(home) + strlen(rest) + 1;
+    char *out = (char *)malloc(need);
+    if (!out) return strdup(path);
+    snprintf(out, need, "%s%s", home, rest);
+    return out;
+}
+
 static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
         sqlite3_result_null(ctx);
@@ -297,7 +318,9 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     ensure_config_table(db);
 
     char *embedder_str = config_get(db, "embedding_embedder");
-    char *model_path   = config_get(db, "embedding_model");
+    char *model_path_raw = config_get(db, "embedding_model");
+    char *model_path   = expand_tilde(model_path_raw);
+    free(model_path_raw);
     char *dims_str     = config_get(db, "embedding_dims");
     char *vtype_str    = config_get(db, "embedding_vector_type");
     char *offset_str   = config_get(db, "embedding_offset");
