@@ -20,9 +20,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(SEMQLITE_ONNX "Build with ONNX Runtime embedding backend (default ON)" ON)
 
 # ---------------------------------------------------------------------------
-# Vendored SQLite: an UNMODIFIED upstream amalgamation (sqlite3.c/.h) and CLI
-# shell (shell.c), generated from the official sqlite/sqlite mirror
-# (github.com/diskerror/sqlite fork) via `make sqlite3.c shell.c sqlite3.h`.
+# Vendored SQLite: upstream amalgamation (sqlite3.c/.h) and CLI shell
+# (shell.c), generated from the canonical sqlite/sqlite mirror
+# (github.com/sqlite/sqlite) via `make sqlite3.c shell.c sqlite3.h`.
+# sqlite3.c/.h are pristine; shell.c carries one local patch (compiler-style
+# error prefix) — see vendor/sqlite/PATCHES.md.
 # See vendor/sqlite/UPSTREAM_COMMIT.txt for the exact commit + version.
 #
 # shell.c's own header comment documents `#define main sqlite3_shell` as the

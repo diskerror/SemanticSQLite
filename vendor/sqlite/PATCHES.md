@@ -1,15 +1,17 @@
 # Carried patches to vendored SQLite
 
 `shell.c`, `sqlite3.c`, and `sqlite3.h` are generated artifacts vendored from
-the `diskerror/sqlite` fork (see `UPSTREAM_COMMIT.txt` for the pinned commit +
-version). They are regenerated with `make sqlite3.c shell.c sqlite3.h` and
-re-copied here.
+the canonical `sqlite/sqlite` GitHub mirror (see `UPSTREAM_COMMIT.txt` for the
+pinned commit + version). They are regenerated with
+`make sqlite3.c shell.c sqlite3.h` and re-copied here.
 
 **Any local edit to these files must be listed below and re-applied after every
 re-vendor** — otherwise the change silently disappears on the next refresh.
-The permanent home for these changes is the fork (`shell.c.in` in
-`diskerror/sqlite`); the entries here are the interim carried patches until the
-fork is updated and re-vendored.
+
+SQLite's canonical source is Fossil, not Git, and the project does not accept
+external pull requests, so these changes are **permanent carried patches**:
+there is no upstream to merge them into. Re-apply each one after every
+re-vendor.
 
 ---
 
@@ -17,7 +19,8 @@ fork is updated and re-vendored.
 
 - **File:** `shell.c`
 - **Function:** `runOneSqlLine()`
-- **Status:** carried patch — NOT yet pushed to `diskerror/sqlite` fork.
+- **Status:** permanent carried patch — SQLite takes no external PRs, so this
+  is re-applied on every re-vendor rather than upstreamed.
 - **Marker:** search for `SEMQLITE PATCH` in `shell.c`.
 
 **Why:** upstream prints SQL errors as `Error near line 13:` (stdin/heredoc,
