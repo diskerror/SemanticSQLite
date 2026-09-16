@@ -2,7 +2,7 @@
 
 `semqlite` — the **real, unmodified SQLite CLI shell** (vendored amalgamation,
 built straight from the official [sqlite/sqlite](https://github.com/sqlite/sqlite)
-mirror, with four custom SQL functions baked in for experimenting on Ragger's semantic
+mirror, with six custom SQL functions baked in for experimenting on Ragger's semantic
 memory database. It assumes that for the most part embeddings are stored as a blob of the binary 
 vector. Other details of the vector encoding can be configured with a few commands.
 
@@ -23,8 +23,8 @@ possible:
 
 Net effect: you get the full upstream CLI — `.mode`, `.import`, `.dump`,
 `.schema`, readline history, everything — plus `DMPHON()`,
-`EMBEDDING_SIM()`/`EMBEDDING_DIST()`, and `EMBED()` available on every
-database you open.
+`EMBEDDING_SIM()`/`EMBEDDING_DIST()`, `EMBED()`, and `STEM_PORTER()`/
+`STEM_SNOWBALL()` available on every database you open.
 
 ## Custom Functions
 
@@ -44,6 +44,58 @@ SELECT DMPHON('Schmidt', 1);     -- 'XMT'
 SELECT DMPHON('Schmidt', 2);     -- 'SMT'
 SELECT DMPHON('hello', 2);       -- 'HL'  (only one code exists, so mode 2 == mode 1)
 ```
+
+### `STEM_PORTER(word)`
+Stems a single English word using the classic 1980 Porter algorithm
+(ported from Ragger's C++ implementation, zero deps). English only, no
+configuration.
+
+```sql
+SELECT STEM_PORTER('running');   -- 'run'
+SELECT STEM_PORTER('flies');     -- 'fli'
+SELECT STEM_PORTER('RUNNING');   -- 'run'  (case-insensitive)
+```
+
+### `STEM_SNOWBALL(word [, language])`
+Stems a single UTF-8 word using the [Snowball](https://snowballstem.org)
+stemming algorithm family (vendored `libstemmer_c`). Unlike `STEM_PORTER`,
+this supports many languages — one stemming algorithm per language, picked
+by name at call time.
+
+`language` accepts either a canonical long name (`english`, `french`,
+`german`, `russian`, ...) or a short code (`en`, `fr`, `de`, `ru`, ...),
+case-insensitively. The full list of supported languages: arabic (`ar`),
+armenian (`hy`), basque (`eu`), catalan (`ca`), danish (`da`), dutch (`nl`),
+english (`en`), finnish (`fi`), french (`fr`), german (`de`), greek (`el`),
+hindi (`hi`), hungarian (`hu`), indonesian (`id`), irish (`ga`), italian
+(`it`), lithuanian (`lt`), nepali (`ne`), norwegian (`no`), **porter**
+(long name only — the original 1980 Porter algorithm as implemented by
+Snowball itself, distinct from `STEM_PORTER()` above), portuguese (`pt`),
+romanian (`ro`), russian (`ru`), serbian (`sr`), spanish (`es`), swedish
+(`sv`), tamil (`ta`), turkish (`tr`), yiddish (`yi`).
+
+If `language` is omitted, `STEM_SNOWBALL` uses the `snowball_language`
+`semqlite_config` setting, which itself defaults to English (`en`) if
+never set:
+
+```sql
+SELECT SEMQLITE_SET('snowball_language', 'en');  -- set the default (optional; 'en' is already the default)
+
+SELECT STEM_SNOWBALL('running');            -- 'run'          (default English)
+SELECT STEM_SNOWBALL('chevaux', 'french');  -- 'cheval'       (long name)
+SELECT STEM_SNOWBALL('chevaux', 'fr');      -- 'cheval'       (short code, same result)
+SELECT STEM_SNOWBALL('laufen', 'de');       -- 'lauf'
+```
+
+An unrecognised language name degrades gracefully to a lowercased
+passthrough of the input rather than an error — check
+`snowball_language_supported()`-style validation up front if you need to
+detect that case.
+
+**Note:** `STEM_SNOWBALL` with the 1-argument form is **not** marked
+`SQLITE_DETERMINISTIC` because its result depends on the mutable
+`snowball_language` setting; the 2-argument form (explicit language) is
+deterministic. `STEM_PORTER` is always deterministic.
 
 ### `EMBEDDING_SIM(blob1, blob2)` / `EMBEDDING_DIST(blob1, blob2)`
 Cosine similarity / cosine distance between two embedding BLOBs.
@@ -305,7 +357,9 @@ cp sqlite3.c sqlite3.h shell.c /path/to/SemanticSQLite/vendor/sqlite/
 ## License
 
 SQLite itself is public domain. `DMPHON`/Double Metaphone is a published,
-widely-implemented public algorithm. `EMBED()` links libllama (MIT license).
-This project's own code (the `EMBEDDING_SIM`/`EMBEDDING_DIST`/`EMBED`
-implementations, the shell-integration glue) is released with no
-restrictions — do whatever you want with it.
+widely-implemented public algorithm. `STEM_PORTER` is the classic public-domain
+1980 Porter algorithm. `STEM_SNOWBALL` links the vendored Snowball
+`libstemmer_c` (BSD-3-Clause, [snowballstem.org](https://snowballstem.org)).
+`EMBED()` links libllama (MIT license). This project's own code (the
+`EMBEDDING_SIM`/`EMBEDDING_DIST`/`EMBED` implementations, the shell-integration
+glue) is released with no restrictions — do whatever you want with it.
