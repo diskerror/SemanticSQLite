@@ -264,6 +264,7 @@ target_link_libraries(semqlite_ext PUBLIC
     sqlite3_amalgamation
     diskerror_double_metaphone
     diskerror_embedding_codec
+    diskerror_stemmer_capi
     "${LLAMA_LIBRARY}"
     ${SEMQLITE_ONNX_LIBS}
 )

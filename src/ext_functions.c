@@ -21,6 +21,7 @@
 
 #include "DoubleMetaphoneCapi.h"
 #include "EmbeddingCodecCapi.h"
+#include "StemmerCapi.h"
 
 #include <sqlite3.h>
 #include <ctype.h>
@@ -177,6 +178,55 @@ static void embedding_dist_func(sqlite3_context *ctx, int argc, sqlite3_value **
 }
 
 /* ------------------------------------------------------------------ */
+/* STEM_PORTER(word) -> stemmed English word (classic Porter 1980)     */
+/* STEM_SNOWBALL(word [, language]) -> stemmed word via Snowball       */
+/*   language: canonical long name (e.g. "french") or short code       */
+/*   (e.g. "fr"); defaults to the 'snowball_language' config setting,  */
+/*   which itself defaults to "en"/"english" if never set via          */
+/*   SELECT SEMQLITE_SET('snowball_language', ...).                    */
+/* ------------------------------------------------------------------ */
+static void stem_porter_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx);
+        return;
+    }
+    const char *word = (const char *)sqlite3_value_text(argv[0]);
+    char *result = diskerror_stem_en(word);
+    if (!result) {
+        sqlite3_result_text(ctx, "", 0, SQLITE_STATIC);
+        return;
+    }
+    sqlite3_result_text(ctx, result, -1, SQLITE_TRANSIENT);
+    diskerror_free(result);
+}
+
+static void stem_snowball_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx);
+        return;
+    }
+    const char *word = (const char *)sqlite3_value_text(argv[0]);
+
+    char *language = NULL;
+    if (argc >= 2 && sqlite3_value_type(argv[1]) != SQLITE_NULL) {
+        const char *lang_arg = (const char *)sqlite3_value_text(argv[1]);
+        if (lang_arg) language = strdup(lang_arg);
+    } else {
+        sqlite3 *db = sqlite3_context_db_handle(ctx);
+        language = ext_config_get(db, "snowball_language");
+    }
+
+    char *result = diskerror_stem_snowball(word, language);
+    free(language);
+    if (!result) {
+        sqlite3_result_text(ctx, "", 0, SQLITE_STATIC);
+        return;
+    }
+    sqlite3_result_text(ctx, result, -1, SQLITE_TRANSIENT);
+    diskerror_free(result);
+}
+
+/* ------------------------------------------------------------------ */
 int semqlite_register(sqlite3 *db, char **pzErrMsg, const void *pApi) {
     (void)pzErrMsg;
     (void)pApi;
@@ -188,5 +238,11 @@ int semqlite_register(sqlite3 *db, char **pzErrMsg, const void *pApi) {
                             NULL, embedding_sim_func, NULL, NULL);
     sqlite3_create_function(db, "EMBEDDING_DIST", 2, SQLITE_UTF8,
                             NULL, embedding_dist_func, NULL, NULL);
+    sqlite3_create_function(db, "STEM_PORTER", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+                            NULL, stem_porter_func, NULL, NULL);
+    sqlite3_create_function(db, "STEM_SNOWBALL", 1, SQLITE_UTF8,
+                            NULL, stem_snowball_func, NULL, NULL);
+    sqlite3_create_function(db, "STEM_SNOWBALL", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+                            NULL, stem_snowball_func, NULL, NULL);
     return SQLITE_OK;
 }

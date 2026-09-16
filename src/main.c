@@ -42,7 +42,7 @@ static void print_semqlite_version(int include_sqlite_version) {
         printf("  SQLite %s %s\n", sqlite3_libversion(), sqlite3_sourceid());
     }
     printf("  Custom functions: DMPHON, EMBEDDING_SIM, EMBEDDING_DIST, "
-           "EMBED, SEMQLITE_SET, SEMQLITE_GET\n");
+           "EMBED, SEMQLITE_SET, SEMQLITE_GET, STEM_PORTER, STEM_SNOWBALL\n");
     printf("  Embedding backends:"
 #ifdef SEMQLITE_HAVE_ONNX
            " onnx (default),"
