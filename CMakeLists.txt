@@ -20,12 +20,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(SEMQLITE_ONNX "Build with ONNX Runtime embedding backend (default ON)" ON)
 
 # ---------------------------------------------------------------------------
-# Vendored SQLite: upstream amalgamation (sqlite3.c/.h) and CLI shell
-# (shell.c), generated from the canonical sqlite/sqlite mirror
-# (github.com/sqlite/sqlite) via `make sqlite3.c shell.c sqlite3.h`.
-# sqlite3.c/.h are pristine; shell.c carries one local patch (compiler-style
-# error prefix) — see vendor/sqlite/PATCHES.md.
-# See vendor/sqlite/UPSTREAM_COMMIT.txt for the exact commit + version.
+# Vendored SQLite CLI shell (shell.c), generated from the canonical
+# sqlite/sqlite mirror via `make shell.c`. It carries one local patch
+# (compiler-style error prefix) — see vendor/sqlite/PATCHES.md. The library
+# (sqlite3.c/.h) lives in c_lib/vendor/sqlite, same upstream commit — see
+# vendor/sqlite/UPSTREAM_COMMIT.txt; re-vendor both together.
 #
 # shell.c's own header comment documents `#define main sqlite3_shell` as the
 # supported way to use it "as a subroutine" from another project — that's
@@ -73,16 +72,23 @@ set(SHELL_DEFS
     ${SHELL_EDITLINE_DEFS}
 )
 
-add_library(sqlite3_amalgamation STATIC
-    "${SQLITE_VENDOR_DIR}/sqlite3.c"
-)
-target_include_directories(sqlite3_amalgamation PUBLIC "${SQLITE_VENDOR_DIR}")
-target_compile_options(sqlite3_amalgamation PRIVATE ${SHELL_DEFS})
-if(APPLE)
-    target_link_libraries(sqlite3_amalgamation PUBLIC "-framework CoreFoundation")
+# The SQLite library itself (sqlite3.c) comes prebuilt from c_lib as
+# diskerror_sqlite3 — foreign keys default ON, FTS5/RTREE/DBSTAT/MATH on.
+# Only the CLI shell (shell.c, carrying our local patch) is compiled here.
+# Local sibling ../c_lib → prebuilt archives (no recompiling here);
+# otherwise (fresh clone / CI) fetch c_lib from GitHub as a subproject.
+if(EXISTS "${CMAKE_SOURCE_DIR}/../c_lib/cmake/UseCLib.cmake")
+    include("${CMAKE_SOURCE_DIR}/../c_lib/cmake/UseCLib.cmake")
+    use_c_lib(0.2)
+else()
+    message(STATUS "c_lib: fetching from GitHub (no local ../c_lib)")
+    include(FetchContent)
+    FetchContent_Declare(c_lib
+        GIT_REPOSITORY https://github.com/diskerror/c_lib.git
+        GIT_TAG        master
+    )
+    FetchContent_MakeAvailable(c_lib)
 endif()
-find_package(Threads REQUIRED)
-target_link_libraries(sqlite3_amalgamation PUBLIC Threads::Threads ${CMAKE_DL_LIBS} m)
 
 # shell.c compiled as its own object, main() renamed to sqlite3_shell() so
 # it becomes a callable subroutine (upstream-documented pattern — see the
@@ -95,9 +101,13 @@ add_library(sqlite_shell_obj OBJECT
     "${SQLITE_VENDOR_DIR}/shell.c"
 )
 target_include_directories(sqlite_shell_obj PRIVATE
-    "${SQLITE_VENDOR_DIR}"
     "${CMAKE_SOURCE_DIR}/include"
 )
+target_include_directories(sqlite_shell_obj PRIVATE
+    $<TARGET_PROPERTY:diskerror_sqlite3,INTERFACE_INCLUDE_DIRECTORIES>)
+if(TARGET c_lib_build)
+    add_dependencies(sqlite_shell_obj c_lib_build)
+endif()
 if(EDITLINE_LIBRARY AND EDITLINE_INCLUDE_DIR)
     target_include_directories(sqlite_shell_obj PRIVATE "${EDITLINE_INCLUDE_DIR}")
 endif()
@@ -237,16 +247,6 @@ else()
     message(STATUS "ONNX embedding backend: disabled (-DSEMQLITE_ONNX=OFF)")
 endif()
 
-# ---------------------------------------------------------------------------
-# c_lib (FetchContent — uses local copy if FETCHCONTENT_SOURCE_DIR_C_LIB is
-# set, otherwise clones from GitHub)
-# ---------------------------------------------------------------------------
-include(FetchContent)
-FetchContent_Declare(c_lib
-    GIT_REPOSITORY https://github.com/diskerror/c_lib.git
-    GIT_TAG        master
-)
-FetchContent_MakeAvailable(c_lib)
 
 # ---------------------------------------------------------------------------
 # Our added functions: DMPHON(), EMBEDDING_SIM()/EMBEDDING_DIST(), EMBED()
@@ -259,9 +259,9 @@ add_library(semqlite_ext STATIC
 target_include_directories(semqlite_ext PUBLIC
     "${CMAKE_SOURCE_DIR}/include"
 )
-target_include_directories(semqlite_ext PRIVATE "${SQLITE_VENDOR_DIR}" "${LLAMA_INCLUDE_DIR}" "${GGML_INCLUDE_DIR}" ${SEMQLITE_ONNX_INCLUDES})
+target_include_directories(semqlite_ext PRIVATE "${LLAMA_INCLUDE_DIR}" "${GGML_INCLUDE_DIR}" ${SEMQLITE_ONNX_INCLUDES})
 target_link_libraries(semqlite_ext PUBLIC
-    sqlite3_amalgamation
+    diskerror_sqlite3
     diskerror_double_metaphone
     diskerror_embedding_codec
     diskerror_stemmer_capi
@@ -280,8 +280,10 @@ add_executable(semqlite
     src/main.c
     $<TARGET_OBJECTS:sqlite_shell_obj>
 )
-target_include_directories(semqlite PRIVATE "${SQLITE_VENDOR_DIR}")
-target_link_libraries(semqlite PRIVATE semqlite_ext sqlite3_amalgamation)
+target_link_libraries(semqlite PRIVATE semqlite_ext diskerror_sqlite3)
+if(TARGET c_lib_build)
+    add_dependencies(semqlite_ext c_lib_build)
+endif()
 if(EDITLINE_LIBRARY AND EDITLINE_INCLUDE_DIR)
     target_link_libraries(semqlite PRIVATE "${EDITLINE_LIBRARY}")
 endif()

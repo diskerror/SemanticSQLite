@@ -292,8 +292,11 @@ arm64/x86_64, Linux x86_64/aarch64), and `tokenizers-cpp` comes from the
 submodule pulled above. Disable it with `--no-onnx` (build script) or
 `-DSEMQLITE_ONNX=OFF` (manual cmake) if you only want the `llama` backend.
 
-[c_lib](https://github.com/diskerror/c_lib) (shared C++ utilities) is
-auto-fetched from GitHub at configure time via CMake FetchContent.
+[c_lib](https://github.com/diskerror/c_lib) provides the SQLite library itself
+(`diskerror_sqlite3`, foreign keys on by default) plus the shared C++ utilities.
+With a sibling checkout at `../c_lib`, its prebuilt libraries in `../c_lib/build`
+are linked (`../c_lib/build_libs.sh` runs incrementally before each build);
+otherwise c_lib is fetched from GitHub and built as a subproject.
 
 ```bash
 ./scripts/build.sh              # check deps, configure, build
@@ -302,25 +305,9 @@ sudo cmake --install build      # installs semqlite to /usr/local/bin
 
 ### Dev build (local c_lib)
 
-If you have a local checkout of [c_lib](https://github.com/diskerror/c_lib),
-create a `CMakeUserPresets.json` (gitignored) to use it instead of fetching
-from GitHub:
-
-```json
-{
-  "version": 6,
-  "configurePresets": [{
-    "name": "dev",
-    "inherits": "default",
-    "cacheVariables": {
-      "FETCHCONTENT_SOURCE_DIR_C_LIB": "/path/to/your/c_lib"
-    }
-  }]
-}
-```
-
-The build script auto-detects this file and passes the variable to cmake.
-CLion also picks up the `dev` preset from its CMake profile dropdown.
+Check out [c_lib](https://github.com/diskerror/c_lib) next to this repo
+(`../c_lib`); it is detected automatically. Cleaning this project never
+recompiles c_lib; to rebuild it from scratch, run `../c_lib/build_libs.sh --clean`.
 
 Manual cmake (without the build script):
 
@@ -342,8 +329,10 @@ semqlite ~/.ragger/memories.db "SELECT ..."  # one-shot query
 
 ## Refreshing the vendored SQLite source
 
-The amalgamation was generated from `sqlite/sqlite` at the commit recorded in
-`vendor/sqlite/UPSTREAM_COMMIT.txt`:
+`shell.c` here and `sqlite3.c`/`sqlite3.h` in `c_lib/vendor/sqlite/` were
+generated from `sqlite/sqlite` at the commit recorded in
+`vendor/sqlite/UPSTREAM_COMMIT.txt` (same file in c_lib). Refresh both together
+and re-apply the `shell.c` patch in `vendor/sqlite/PATCHES.md`:
 
 ```bash
 git clone https://github.com/sqlite/sqlite
@@ -351,7 +340,8 @@ cd /path/to/sqlite-clone && git pull
 mkdir build-amal && cd build-amal
 ../configure --disable-tcl
 make sqlite3.c shell.c sqlite3.h
-cp sqlite3.c sqlite3.h shell.c /path/to/SemanticSQLite/vendor/sqlite/
+cp sqlite3.c sqlite3.h /path/to/c_lib/vendor/sqlite/
+cp shell.c /path/to/SemanticSQLite/vendor/sqlite/
 ```
 
 ## License
