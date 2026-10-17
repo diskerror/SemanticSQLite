@@ -36,6 +36,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ---------------------------------------------------------------------------
 option(SEMQLITE_ONNX "Build with ONNX Runtime embedding backend (default ON)" ON)
 
+# Fetched dependencies (tokenizers-cpp, c_lib fallback, ONNX checksums): pinned
+# in cmake/pins.cmake; -DDEPS_LATEST=ON tracks upstream instead. See Deps.cmake.
+include(cmake/Deps.cmake)
+
 # ---------------------------------------------------------------------------
 # Vendored SQLite CLI shell (shell.c), generated from the canonical
 # sqlite/sqlite mirror via `make shell.c`. It carries one local patch
@@ -99,12 +103,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/../c_lib/cmake/UseCLib.cmake")
     use_c_lib(0.2)
 else()
     message(STATUS "c_lib: fetching from GitHub (no local ../c_lib)")
-    include(FetchContent)
-    FetchContent_Declare(c_lib
-        GIT_REPOSITORY https://github.com/diskerror/c_lib.git
-        GIT_TAG        master
-    )
-    FetchContent_MakeAvailable(c_lib)
+    deps_add(c_lib master)
 endif()
 
 # shell.c compiled as its own object, main() renamed to sqlite3_shell() so
@@ -221,7 +220,13 @@ if(SEMQLITE_ONNX)
         set(ORT_CACHE "${CMAKE_BINARY_DIR}/_deps/onnxruntime/${ORT_PKG}")
         if(NOT EXISTS "${ORT_CACHE}/lib/${ORT_LIB_NAME}")
             message(STATUS "ONNX Runtime: fetching ${ORT_URL}")
-            file(DOWNLOAD "${ORT_URL}" "${CMAKE_BINARY_DIR}/_deps/${ORT_PKG}.tgz" SHOW_PROGRESS STATUS _ort_dl)
+            set(_ort_hash "")
+            if(DEFINED ORT_SHA256_${ORT_PKG})
+                set(_ort_hash EXPECTED_HASH SHA256=${ORT_SHA256_${ORT_PKG}})
+            else()
+                message(WARNING "ONNX Runtime: no pinned SHA-256 for ${ORT_PKG} (cmake/pins.cmake); download is unverified")
+            endif()
+            file(DOWNLOAD "${ORT_URL}" "${CMAKE_BINARY_DIR}/_deps/${ORT_PKG}.tgz" SHOW_PROGRESS STATUS _ort_dl ${_ort_hash})
             list(GET _ort_dl 0 _ort_rc)
             if(NOT _ort_rc EQUAL 0)
                 message(FATAL_ERROR "ONNX Runtime download failed: ${_ort_dl}")
@@ -242,19 +247,15 @@ if(SEMQLITE_ONNX)
         set_target_properties(onnxruntime PROPERTIES IMPORTED_SONAME "@rpath/libonnxruntime.dylib")
     endif()
 
-    # ---- tokenizers-cpp (vendored, same subtree as Ragger) ----
-    set(TOKENIZERS_VENDOR "${CMAKE_SOURCE_DIR}/vendor/tokenizers-cpp")
-    if(NOT EXISTS "${TOKENIZERS_VENDOR}/CMakeLists.txt")
-        message(FATAL_ERROR "vendor/tokenizers-cpp not found. Copy or symlink from Ragger/vendor/tokenizers-cpp.")
-    endif()
-    # EXCLUDE_FROM_ALL: tokenizers-cpp (and its own vendored deps —
-    # msgpack-cxx, sentencepiece) still get BUILT because semqlite_ext links
-    # against tokenizers_cpp, but their own install() rules are skipped.
+    # ---- tokenizers-cpp (fetched, pinned in cmake/pins.cmake) ----
+    # EXCLUDE_FROM_ALL: tokenizers-cpp (and its own deps — msgpack-cxx,
+    # sentencepiece) still get BUILT because semqlite_ext links against
+    # tokenizers_cpp, but their own install() rules are skipped.
     # Without this, `cmake --install` walks the whole subdirectory graph
     # and installs msgpack-cxx's headers/cmake-config files into
     # /usr/local/include/msgpack/ etc. — none of which semqlite needs
     # or exposes; only the semqlite binary itself should be installed.
-    add_subdirectory("${TOKENIZERS_VENDOR}" EXCLUDE_FROM_ALL)
+    deps_add(tokenizers_cpp main EXCLUDE_FROM_ALL)
 
     set(SEMQLITE_ONNX_SOURCES src/embed_onnx.cpp)
     list(APPEND SEMQLITE_ONNX_LIBS onnxruntime tokenizers_cpp)

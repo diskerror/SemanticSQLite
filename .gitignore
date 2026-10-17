@@ -14,3 +14,7 @@ CMakeUserPresets.json
 compile_commands.json
 .DS_Store
 .cache/
+
+# Legacy local checkout of tokenizers-cpp (now fetched; safe to delete)
+vendor/tokenizers-cpp/
+vendor/onnxruntime*

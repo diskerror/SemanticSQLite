@@ -246,10 +246,10 @@ against Ragger's live data with no further configuration.
 |---|---|---|
 | CMake ≥ 3.24 | everything | |
 | C11 + C++20 compiler | everything | GCC 14 / Clang tested |
-| `git` | everything | for the submodule below |
+| `git` | everything | CMake clones the dependencies below (pinned) at configure time |
 | **Rust toolchain (`cargo`)** | `-DSEMQLITE_ONNX=ON` (default) | `tokenizers-cpp`'s HuggingFace backend is a Rust crate built via `cargo build`, invoked automatically by CMake. **Not optional** unless you build with `-DSEMQLITE_ONNX=OFF`. See install command below. |
 | `libllama` (llama.cpp) | `embedding_embedder='llama'` | MacPorts on macOS, build-from-source on Linux — see below. Not needed for the ONNX backend, but the CMake always looks for it (both backends can coexist in one binary). |
-| Internet access (first build only) | `-DSEMQLITE_ONNX=ON` | ONNX Runtime is auto-fetched from GitHub releases; cached under `build/_deps/` after the first configure. |
+| Internet access (first build only) | everything | Dependencies are fetched from GitHub at configure time and cached under `build/_deps/`: c_lib (unless a sibling `../c_lib` exists), plus with `-DSEMQLITE_ONNX=ON` (default) `tokenizers-cpp` (git, pinned commit) and ONNX Runtime (release archive, SHA-256 verified). Versions are pinned in `cmake/pins.cmake`. |
 | `libedit` (optional) | interactive shell usage | Gives the shell arrow-key/history line editing. Without it, arrow keys print raw escape sequences and there's no command history — the shell still works, it's just unpleasant to use interactively. macOS (MacPorts): `sudo port install libedit`. Debian/Linux: `sudo apt install libedit-dev`. Auto-detected; silently skipped if not found. |
 
 If a requirement is missing, CMake usually fails at build time with an
@@ -260,7 +260,7 @@ command) — check this table first if a build fails partway through.
 ```bash
 git clone <this-repo-url> SemanticSQLite
 cd SemanticSQLite
-git submodule update --init --recursive   # pulls vendor/tokenizers-cpp + its deps
+# nothing else to fetch by hand — CMake downloads the pinned dependencies
 ```
 
 Install Rust (required for the default ONNX backend):
@@ -288,8 +288,8 @@ sudo ldconfig
 
 The ONNX embedding backend (default) needs no separate install — ONNX
 Runtime is auto-fetched at configure time for your platform (macOS
-arm64/x86_64, Linux x86_64/aarch64), and `tokenizers-cpp` comes from the
-submodule pulled above. Disable it with `--no-onnx` (build script) or
+arm64, Linux x86_64/aarch64), and `tokenizers-cpp` is cloned at the commit
+pinned in `cmake/pins.cmake`. Disable it with `--no-onnx` (build script) or
 `-DSEMQLITE_ONNX=OFF` (manual cmake) if you only want the `llama` backend.
 
 [c_lib](https://github.com/diskerror/c_lib) provides the SQLite library itself
@@ -297,6 +297,18 @@ submodule pulled above. Disable it with `--no-onnx` (build script) or
 With a sibling checkout at `../c_lib`, its prebuilt libraries in `../c_lib/build`
 are linked (`../c_lib/build_libs.sh` runs incrementally before each build);
 otherwise c_lib is fetched from GitHub and built as a subproject.
+
+#### Dependency pinning
+
+`cmake/pins.cmake` records the exact commit of each fetched dependency, so any
+tag or fresh clone builds the same code. While developing, configure with
+`-DDEPS_LATEST=ON` (or put it in your local `CMakeUserPresets.json`; `scripts/build.sh`
+passes it on) to track each upstream's newest commit instead; the commits used land in
+`build/deps-resolved.cmake`. Before tagging a release, build and test that way, then run
+`scripts/pin-deps.sh` and commit `cmake/pins.cmake`. `cmake --build build --target update_deps`
+re-fetches the newest upstream on demand. To use a local checkout of one dependency
+(offline builds), pass `-DFETCHCONTENT_SOURCE_DIR_TOKENIZERS_CPP=/path`. ONNX Runtime is
+pinned by version (`ORT_VERSION`) and archive checksum, and is bumped by hand.
 
 ```bash
 ./scripts/build.sh              # check deps, configure, build

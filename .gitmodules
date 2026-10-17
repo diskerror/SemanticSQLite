@@ -1,3 +1,0 @@
-[submodule "vendor/tokenizers-cpp"]
-	path = vendor/tokenizers-cpp
-	url = https://github.com/mlc-ai/tokenizers-cpp.git

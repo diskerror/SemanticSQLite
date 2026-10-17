@@ -94,9 +94,17 @@ if [ -f ../CMakeUserPresets.json ]; then
     fi
 fi
 
-if [ ! -f Makefile ] || [ ../CMakeLists.txt -nt Makefile ]; then
+# Dev presets (local, git-ignored) may set DEPS_LATEST=ON to track upstream's
+# newest dependency commits; otherwise cmake/pins.cmake's pinned commits are used.
+DEPS_FLAG=""
+if [ -f ../CMakeUserPresets.json ]; then
+    DEPS_LATEST_VAL=$(python3 -c "import json; d=json.load(open('../CMakeUserPresets.json')); print(d['configurePresets'][0].get('cacheVariables',{}).get('DEPS_LATEST',''))" 2>/dev/null || true)
+    [ -n "$DEPS_LATEST_VAL" ] && DEPS_FLAG="-DDEPS_LATEST=$DEPS_LATEST_VAL"
+fi
+
+if [ ! -f Makefile ] || [ ../CMakeLists.txt -nt Makefile ] || [ ../cmake/pins.cmake -nt Makefile ]; then
     echo "[+] Configuring (SEMQLITE_ONNX=$ONNX_FLAG)..."
-    cmake .. $CMAKE_FLAGS $LOCAL_C_LIB -DSEMQLITE_ONNX="$ONNX_FLAG"
+    cmake .. $CMAKE_FLAGS $LOCAL_C_LIB $DEPS_FLAG -DSEMQLITE_ONNX="$ONNX_FLAG"
 fi
 
 echo "[+] Building with $JOBS threads..."
