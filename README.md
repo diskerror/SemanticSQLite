@@ -146,9 +146,10 @@ BLOB — same shape as embeddings already stored in Ragger's DB.
 
 SQLite extensions can't actually define new `PRAGMA`s (the syntax is
 hardcoded into the core parser, not an extension point like functions/vtabs
-are), so the closest equivalent — settings that persist in the database file
-so you never re-type them — is a `semqlite_config` table plus two helper
-functions:
+are), so the closest equivalent is a `semqlite_config` key/value table plus
+helper functions. Live settings are kept in RAM (`temp.semqlite_config`);
+opening a database never writes to it. Persisting is explicit via
+`SEMQLITE_SAVE()`:
 
 ```sql
 SELECT SEMQLITE_SET('embedding_model', '/path/to/all-MiniLM-L12-v2'); -- or,
@@ -160,13 +161,31 @@ SELECT SEMQLITE_SET('embedding_vector_type', 'f16');     -- "f16" (default), "f3
 SELECT SEMQLITE_SET('embedding_offset', '0');            -- bytes of zero-filled header to prepend (default 0)
 SELECT SEMQLITE_SET('embedding_skip_renorm', '0');       -- set to 1 to skip L2 normalization (testing)
 
-SELECT SEMQLITE_GET('embedding_model');   -- read back current setting
+SELECT SEMQLITE_GET('embedding_model');   -- read back current setting; a known key
+                                          -- that is unset is created with its default
+SELECT SEMQLITE_SAVE();                   -- write all current settings (defaults filled in,
+                                          -- never an empty table) to main.semqlite_config
+SELECT SEMQLITE_SAVE(1);                  -- same, but also saves embedding_api_key (plain text
+                                          -- in the file). SAVE() never saves it and removes
+                                          -- any previously saved copy.
 
 SELECT EMBED('some text to embed');     -- BLOB, per the settings above
 ```
 
-Settings are set once per database and persist across `semqlite` restarts
-(they live in `semqlite_config`, auto-created on first use). The model itself
+`embedding_model` is either a literal path (starts with `/` or `~`) or a model
+id. An id is resolved under `--model-directory=DIR` (alias
+`--onnx-model-directory=DIR`) if given, else under `models/` next to the
+database file. Matching is exact: `<id>`, and for llama also `<id>.gguf`. If
+nothing exists, the error lists every path tried. An in-memory database has no
+default directory, so use an absolute path or `--model-directory`.
+
+Settings last for the connection. If the database file contains a saved
+`main.semqlite_config` (from `SEMQLITE_SAVE()`), it is loaded when the
+connection opens, as if `SEMQLITE_SET` had been called for each row; later
+`SEMQLITE_SET` calls change RAM only. The saved table is a snapshot — re-run
+`SEMQLITE_SAVE()` to update it. Defaults: `embedding_embedder`=`onnx`,
+`embedding_model`=`` (unset), `embedding_dims`=`0`, `embedding_vector_type`=`f16`,
+`embedding_offset`=`0`, `embedding_skip_renorm`=`0`, `embedding_api_key`=`` (unused until the remote backend exists). The model itself
 is loaded lazily on first `EMBED()` call and cached for the process
 lifetime, keyed by path — calling `SEMQLITE_SET('embedding_model', ...)` with
 a different path swaps the cached model on the next call.

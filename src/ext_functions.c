@@ -22,6 +22,7 @@
 #include "DoubleMetaphoneCapi.h"
 #include "EmbeddingCodecCapi.h"
 #include "StemmerCapi.h"
+#include "embed.h"
 
 #include <sqlite3.h>
 #include <ctype.h>
@@ -30,29 +31,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/* ------------------------------------------------------------------ */
-/* Config helpers (same semqlite_config table that embed.c manages)       */
-/* ------------------------------------------------------------------ */
-static char *ext_config_get(sqlite3 *db, const char *key) {
-    sqlite3_stmt *stmt = NULL;
-    char *result = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT value FROM semqlite_config WHERE key = ?",
-            -1, &stmt, NULL) != SQLITE_OK) {
-        return NULL;
-    }
-    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        const char *v = (const char *)sqlite3_column_text(stmt, 0);
-        if (v) {
-            size_t len = strlen(v);
-            result = (char *)malloc(len + 1);
-            if (result) memcpy(result, v, len + 1);
-        }
-    }
-    sqlite3_finalize(stmt);
-    return result;
-}
+/* Config reads go through semqlite_config_get() (embed.c): RAM-backed,
+ * with per-key defaults. */
+#define ext_config_get semqlite_config_get
 
 /* ------------------------------------------------------------------ */
 /* Vector type identifiers (stable values, match Ragger convention and */

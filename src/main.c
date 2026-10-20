@@ -26,6 +26,8 @@
 // banner that shell.c prints right after.
 
 #include <sqlite3.h>
+#include <stdlib.h>
+#include "embed.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -51,6 +53,20 @@ static void print_semqlite_version(int include_sqlite_version) {
 }
 
 int main(int argc, char **argv) {
+    // --model-directory=DIR (alias --onnx-model-directory=DIR): consumed here
+    // and removed from argv, since the stock shell rejects unknown options.
+    {
+        int w = 1;
+        for (int i = 1; i < argc; i++) {
+            const char *v = NULL;
+            if (strncmp(argv[i], "--model-directory=", 18) == 0) v = argv[i] + 18;
+            else if (strncmp(argv[i], "--onnx-model-directory=", 23) == 0) v = argv[i] + 23;
+            if (v) semqlite_set_model_directory(v);
+            else argv[w++] = argv[i];
+        }
+        argc = w;
+        argv[argc] = NULL;
+    }
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-version") == 0 || strcmp(argv[i], "--version") == 0) {
             print_semqlite_version(1);

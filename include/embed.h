@@ -8,11 +8,21 @@
 
 #include <sqlite3.h>
 
-// Registers EMBED(text), SEMQLITE_SET(key, value), SEMQLITE_GET(key) on db.
-// Also ensures the semqlite_config table exists.
+// Registers EMBED(text), SEMQLITE_SET(key, value), SEMQLITE_GET(key) and
+// SEMQLITE_SAVE() on db. Settings live in temp.semqlite_config (RAM); if the
+// file has a saved main.semqlite_config it is loaded at connection setup.
+// Opening a database never writes to it.
 int semqlite_register_embed(sqlite3 *db);
+
+// Reads a setting (malloc'd, caller frees). A known key that is missing is
+// created with its default and returned; an unknown missing key returns NULL.
+char *semqlite_config_get(sqlite3 *db, const char *key);
 
 // Frees any cached libllama model/context. Call once at process exit
 // (the shell doesn't have a clean unload hook, so this is best-effort;
 // omitting it just leaks until process exit, which is harmless for a CLI).
 void semqlite_embed_shutdown(void);
+
+// Set the directory under which relative embedding_model ids are resolved
+// (CLI --model-directory). NULL/"" restores the default (<DB dir>/models).
+void semqlite_set_model_directory(const char *dir);
