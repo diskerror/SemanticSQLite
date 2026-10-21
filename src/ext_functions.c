@@ -1,23 +1,26 @@
-// ext_functions.c — custom SQL functions for sqlite-ext, registered via
-// sqlite3_auto_extension() so they're available on every connection the
-// real SQLite shell opens (see src/main.c).
-//
-//   DMPHON(text [, mode])        — Double Metaphone phonetic encoding
-//   EMBEDDING_SIM(blob, blob)    — cosine similarity  (1.0 = identical direction)
-//   EMBEDDING_DIST(blob, blob)   — cosine distance     (0.0 = identical direction)
-//
-// Embedding blobs are decoded using c_lib's EmbeddingCodec (via the
-// EmbeddingCodecCapi C bridge, since this file is plain C) and the
-// semqlite_config settings:
-//   embedding_vector_type — "f16" (default), "f32", "bf16", or "int8"
-//   embedding_offset      — byte offset into the blob where the vector payload
-//                            starts (default 0; set to skip past any header —
-//                            derive it by inspecting your DB's blobs; there
-//                            is no universal default other than 0)
-//
-// Dimension count is NOT read from settings — it's inferred per-blob from
-// its size (EmbeddingCodec's decode_infer_dims), since SemanticSQLite has
-// no per-DB "expected dims" the way Ragger's settings table does.
+/**
+ * @file ext_functions.c
+ * @brief Custom SQL functions for sqlite-ext, registered via
+ * sqlite3_auto_extension() so they're available on every connection the
+ * real SQLite shell opens (see src/main.c).
+ *
+ *   DMPHON(text [, mode])        — Double Metaphone phonetic encoding
+ *   EMBEDDING_SIM(blob, blob)    — cosine similarity  (1.0 = identical direction)
+ *   EMBEDDING_DIST(blob, blob)   — cosine distance     (0.0 = identical direction)
+ *
+ * Embedding blobs are decoded using c_lib's EmbeddingCodec (via the
+ * EmbeddingCodecCapi C bridge, since this file is plain C) and the
+ * semqlite_config settings:
+ *   embedding_vector_type — "f16" (default), "f32", "bf16", or "int8"
+ *   embedding_offset      — byte offset into the blob where the vector payload
+ *                            starts (default 0; set to skip past any header —
+ *                            derive it by inspecting your DB's blobs; there
+ *                            is no universal default other than 0)
+ *
+ * Dimension count is NOT read from settings — it's inferred per-blob from
+ * its size (EmbeddingCodec's decode_infer_dims), since SemanticSQLite has
+ * no per-DB "expected dims" the way Ragger's settings table does.
+ */
 
 #include "DoubleMetaphoneCapi.h"
 #include "EmbeddingCodecCapi.h"
@@ -31,17 +34,24 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/* Config reads go through semqlite_config_get() (embed.c): RAM-backed,
- * with per-key defaults. */
+/**
+ * @brief Config reads go through semqlite_config_get() (embed.c): RAM-backed,
+ * with per-key defaults.
+ */
 #define ext_config_get semqlite_config_get
 
-/* ------------------------------------------------------------------ */
-/* Vector type identifiers (stable values, match Ragger convention and */
-/* Diskerror::EmbeddingCodec::VectorType / diskerror_vector_type)       */
-/* ------------------------------------------------------------------ */
+/**
+ * @brief Vector type identifiers (stable values, match Ragger convention and
+ * Diskerror::EmbeddingCodec::VectorType / diskerror_vector_type).
+ */
 enum vec_type { VT_F32 = 0, VT_F16 = 1, VT_BF16 = 2, VT_INT8 = 3 };
 
-// Case-insensitive parse; returns VT_F16 for unrecognized strings.
+/**
+ * @brief Case-insensitive parse of a vector type name.
+ *
+ * @param s Type name, e.g. "f32".
+ * @return The matching type; VT_F16 for unrecognized strings.
+ */
 static enum vec_type parse_vec_type(const char *s) {
     if (!s || s[0] == '\0') return VT_F16;
     // lowercase first char for fast dispatch
@@ -56,8 +66,16 @@ static enum vec_type parse_vec_type(const char *s) {
     return VT_F16;
 }
 
-// Read vtype + offset from semqlite_config (caches nothing — called per
-// EMBEDDING_SIM/DIST invocation, but config reads are fast for a CLI tool).
+/**
+ * @brief Read vtype + offset from semqlite_config.
+ *
+ * Caches nothing — called per EMBEDDING_SIM/DIST invocation, but config
+ * reads are fast for a CLI tool.
+ *
+ * @param db     Open connection.
+ * @param vt     Receives the vector type.
+ * @param offset Receives the byte offset.
+ */
 static void read_embed_config(sqlite3 *db, enum vec_type *vt, int *offset) {
     *vt = VT_F16;
     *offset = 0;
@@ -67,8 +85,16 @@ static void read_embed_config(sqlite3 *db, enum vec_type *vt, int *offset) {
     if (offset_str) { *offset = atoi(offset_str); free(offset_str); }
 }
 
-// Shared cosine-similarity computation. Returns 0 on success, -1 on error
-// (NULL/non-blob input, dimension mismatch, or zero vector).
+/**
+ * @brief Shared cosine-similarity computation.
+ *
+ * @param db  Open connection.
+ * @param v1  First embedding blob.
+ * @param v2  Second embedding blob.
+ * @param out Receives the similarity.
+ * @return 0 on success, -1 on error (NULL/non-blob input, dimension
+ *         mismatch, or zero vector).
+ */
 static int cosine_similarity(sqlite3 *db,
                              sqlite3_value *v1, sqlite3_value *v2,
                              double *out) {
@@ -105,13 +131,18 @@ static int cosine_similarity(sqlite3 *db,
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* DMPHON(text [, mode])                                                */
-/*   mode 0 (default): all words, both codes, space-separated          */
-/*   mode 1: first code per word (primary — always present)            */
-/*   mode 2: last code per word (alternate if it exists, else primary — */
-/*           always present; only NULL/empty for non-alphabetic input) */
-/* ------------------------------------------------------------------ */
+/**
+ * @brief DMPHON(text [, mode])
+ *
+ *   - mode 0 (default): all words, both codes, space-separated
+ *   - mode 1: first code per word (primary — always present)
+ *   - mode 2: last code per word (alternate if it exists, else primary —
+ *     always present; only NULL/empty for non-alphabetic input)
+ *
+ * @param ctx  SQLite function context.
+ * @param argc 1 or 2.
+ * @param argv Text and optional mode.
+ */
 static void dmphon_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
         sqlite3_result_null(ctx);
@@ -132,10 +163,13 @@ static void dmphon_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     diskerror_free(result);
 }
 
-/* ------------------------------------------------------------------ */
-/* EMBEDDING_SIM(blob1, blob2) -> cosine similarity [-1, 1]             */
-/* EMBEDDING_DIST(blob1, blob2) -> cosine distance  [0, 2]              */
-/* ------------------------------------------------------------------ */
+/**
+ * @brief EMBEDDING_SIM(blob1, blob2) -> cosine similarity [-1, 1]
+ *
+ * @param ctx  SQLite function context.
+ * @param argc 2.
+ * @param argv The two embedding blobs.
+ */
 static void embedding_sim_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 2) { sqlite3_result_null(ctx); return; }
     sqlite3 *db = sqlite3_context_db_handle(ctx);
@@ -147,6 +181,13 @@ static void embedding_sim_func(sqlite3_context *ctx, int argc, sqlite3_value **a
     sqlite3_result_double(ctx, sim);
 }
 
+/**
+ * @brief EMBEDDING_DIST(blob1, blob2) -> cosine distance [0, 2]
+ *
+ * @param ctx  SQLite function context.
+ * @param argc 2.
+ * @param argv The two embedding blobs.
+ */
 static void embedding_dist_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 2) { sqlite3_result_null(ctx); return; }
     sqlite3 *db = sqlite3_context_db_handle(ctx);
@@ -158,14 +199,13 @@ static void embedding_dist_func(sqlite3_context *ctx, int argc, sqlite3_value **
     sqlite3_result_double(ctx, 1.0 - sim);
 }
 
-/* ------------------------------------------------------------------ */
-/* STEM_PORTER(word) -> stemmed English word (classic Porter 1980)     */
-/* STEM_SNOWBALL(word [, language]) -> stemmed word via Snowball       */
-/*   language: canonical long name (e.g. "french") or short code       */
-/*   (e.g. "fr"); defaults to the 'snowball_language' config setting,  */
-/*   which itself defaults to "en"/"english" if never set via          */
-/*   SELECT SEMQLITE_SET('snowball_language', ...).                    */
-/* ------------------------------------------------------------------ */
+/**
+ * @brief STEM_PORTER(word) -> stemmed English word (classic Porter 1980)
+ *
+ * @param ctx  SQLite function context.
+ * @param argc 1.
+ * @param argv The word.
+ */
 static void stem_porter_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
         sqlite3_result_null(ctx);
@@ -181,6 +221,18 @@ static void stem_porter_func(sqlite3_context *ctx, int argc, sqlite3_value **arg
     diskerror_free(result);
 }
 
+/**
+ * @brief STEM_SNOWBALL(word [, language]) -> stemmed word via Snowball
+ *
+ * language: canonical long name (e.g. "french") or short code (e.g. "fr");
+ * defaults to the 'snowball_language' config setting, which itself defaults
+ * to "en"/"english" if never set via
+ * SELECT SEMQLITE_SET('snowball_language', ...).
+ *
+ * @param ctx  SQLite function context.
+ * @param argc 1 or 2.
+ * @param argv The word and optional language.
+ */
 static void stem_snowball_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
         sqlite3_result_null(ctx);
@@ -207,7 +259,15 @@ static void stem_snowball_func(sqlite3_context *ctx, int argc, sqlite3_value **a
     diskerror_free(result);
 }
 
-/* ------------------------------------------------------------------ */
+/**
+ * @brief Registers DMPHON, EMBEDDING_SIM, EMBEDDING_DIST, STEM_PORTER and
+ * STEM_SNOWBALL on a connection.
+ *
+ * @param db       Open connection.
+ * @param pzErrMsg Unused.
+ * @param pApi     Unused.
+ * @return SQLITE_OK.
+ */
 int semqlite_register(sqlite3 *db, char **pzErrMsg, const void *pApi) {
     (void)pzErrMsg;
     (void)pApi;
