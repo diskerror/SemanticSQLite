@@ -49,7 +49,7 @@ void semqlite_embed_shutdown(void);
 
 /**
  * @brief Set the directory under which relative embedding_model ids are
- * resolved (CLI --model-directory).
+ * resolved (CLI --model-directory; $SEMQLITE_MODEL_DIRECTORY is the fallback).
  *
  * @param dir Directory; NULL or "" restores the default (\<DB dir\>/models).
  */

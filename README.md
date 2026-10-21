@@ -165,19 +165,17 @@ SELECT SEMQLITE_GET('embedding_model');   -- read back current setting; a known 
                                           -- that is unset is created with its default
 SELECT SEMQLITE_SAVE();                   -- write all current settings (defaults filled in,
                                           -- never an empty table) to main.semqlite_config
-SELECT SEMQLITE_SAVE(1);                  -- same, but also saves embedding_api_key (plain text
-                                          -- in the file). SAVE() never saves it and removes
-                                          -- any previously saved copy.
 
 SELECT EMBED('some text to embed');     -- BLOB, per the settings above
 ```
 
 `embedding_model` is either a literal path (starts with `/` or `~`) or a model
 id. An id is resolved under `--model-directory=DIR` (alias
-`--onnx-model-directory=DIR`) if given, else under `models/` next to the
-database file. Matching is exact: `<id>`, and for llama also `<id>.gguf`. If
+`--onnx-model-directory=DIR`) if given, else under `$SEMQLITE_MODEL_DIRECTORY`
+if set, else under `models/` next to the database file. Matching is exact: `<id>`, and for llama also `<id>.gguf`. If
 nothing exists, the error lists every path tried. An in-memory database has no
-default directory, so use an absolute path or `--model-directory`.
+default directory, so use an absolute path, `--model-directory` or
+`$SEMQLITE_MODEL_DIRECTORY`.
 
 Settings last for the connection. If the database file contains a saved
 `main.semqlite_config` (from `SEMQLITE_SAVE()`), it is loaded when the
@@ -185,10 +183,19 @@ connection opens, as if `SEMQLITE_SET` had been called for each row; later
 `SEMQLITE_SET` calls change RAM only. The saved table is a snapshot — re-run
 `SEMQLITE_SAVE()` to update it. Defaults: `embedding_embedder`=`onnx`,
 `embedding_model`=`` (unset), `embedding_dims`=`0`, `embedding_vector_type`=`f16`,
-`embedding_offset`=`0`, `embedding_skip_renorm`=`0`, `embedding_api_key`=`` (unused until the remote backend exists). The model itself
+`embedding_offset`=`0`, `embedding_skip_renorm`=`0`,
+`embedding_api_key_env`=`SEMQLITE_API_KEY`, `snowball_language`=`en`. The model itself
 is loaded lazily on first `EMBED()` call and cached for the process
 lifetime, keyed by path — calling `SEMQLITE_SET('embedding_model', ...)` with
 a different path swaps the cached model on the next call.
+
+**API keys are environment variables, not settings.** `embedding_api_key_env`
+holds the *name* of the variable that carries the key (default
+`SEMQLITE_API_KEY`); the key itself is never stored in a setting, so
+`SEMQLITE_SAVE()` never writes a credential into the file. Nothing reads the
+key until the remote backend exists. Settings can still hold other things you
+would not want to share, so look over `main.semqlite_config` before sending a
+database to someone else.
 
 `embedding_vector_type` controls the on-disk blob format:
 - **f32** — 4 bytes/dim, lossless

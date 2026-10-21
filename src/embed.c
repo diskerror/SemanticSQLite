@@ -61,9 +61,9 @@ static const struct { const char *key; const char *def; } k_config_defaults[] = 
     { "embedding_vector_type",  "f16"  },
     { "embedding_offset",       "0"    },
     { "embedding_skip_renorm",  "0"    },
-    { "embedding_api_key",      ""     },   /* only saved by SEMQLITE_SAVE(1) */
+    { "embedding_api_key_env",  "SEMQLITE_API_KEY" },   /* NAME of the env var holding the key; never the key */
+    { "snowball_language",      "en"   },   /* default language for STEM_SNOWBALL(word) */
 };
-#define K_API_KEY "embedding_api_key"
 #define K_NDEFAULTS (sizeof k_config_defaults / sizeof k_config_defaults[0])
 
 static const char *config_default(const char *key) {
@@ -171,23 +171,22 @@ static void config_load_from_file(sqlite3 *db) {
 }
 
 /**
- * @brief SEMQLITE_SAVE([include_api_key]): persist current settings into
+ * @brief SEMQLITE_SAVE(): persist current settings into
  * main.semqlite_config.
  *
  * Every known key is first materialised with its default if missing, so the
- * saved table is never empty. The API key is saved only when include_api_key
- * is true; otherwise it is never written and any previously saved copy is
- * removed from the file.
+ * saved table is never empty. The API key itself is never a setting: the
+ * table holds only the NAME of the environment variable that carries it
+ * (embedding_api_key_env), so no credential is written to the file.
  *
  * @param ctx  SQLite function context.
- * @param argc 0 or 1.
- * @param argv Optional include_api_key flag.
+ * @param argc 0.
+ * @param argv Unused.
  * @note The number of keys now in the saved table is returned via ctx.
  */
 static void semqlite_save_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc; (void)argv;
     sqlite3 *db = sqlite3_context_db_handle(ctx);
-    int with_key = (argc >= 1 && sqlite3_value_type(argv[0]) != SQLITE_NULL &&
-                    sqlite3_value_int(argv[0]) != 0);
     for (size_t i = 0; i < K_NDEFAULTS; i++)
         free(config_get(db, k_config_defaults[i].key));
     char *err = NULL;
@@ -196,15 +195,11 @@ static void semqlite_save_func(sqlite3_context *ctx, int argc, sqlite3_value **a
         "CREATE TABLE IF NOT EXISTS main.semqlite_config (key TEXT PRIMARY KEY, value TEXT);",
         NULL, NULL, &err);
     if (rc == SQLITE_OK) {
-        const char *copy = with_key
-            ? "INSERT INTO main.semqlite_config (key, value) "
-              "  SELECT key, value FROM temp.semqlite_config WHERE true "
-              "  ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
-            : "INSERT INTO main.semqlite_config (key, value) "
-              "  SELECT key, value FROM temp.semqlite_config WHERE key <> '" K_API_KEY "' "
-              "  ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
-              "DELETE FROM main.semqlite_config WHERE key = '" K_API_KEY "';";
-        rc = sqlite3_exec(db, copy, NULL, NULL, &err);
+        rc = sqlite3_exec(db,
+            "INSERT INTO main.semqlite_config (key, value) "
+            "  SELECT key, value FROM temp.semqlite_config WHERE true "
+            "  ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
+            NULL, NULL, &err);
     }
     if (rc == SQLITE_OK) rc = sqlite3_exec(db, "RELEASE semqlite_save;", NULL, NULL, &err);
     if (rc != SQLITE_OK) {
@@ -486,8 +481,11 @@ static int resolve_model(sqlite3 *db, const char *id, int is_llama, char **out, 
     if (id[0] == '/' || id[0] == '~') {
         cands[nc++] = expand_tilde(id);
     } else {
+        const char *env_dir = getenv("SEMQLITE_MODEL_DIRECTORY");
         if (g_model_dir) {
             base = expand_tilde(g_model_dir);
+        } else if (env_dir && env_dir[0]) {
+            base = expand_tilde(env_dir);
         } else {
             const char *dbf = sqlite3_db_filename(db, "main");
             const char *slash = (dbf && dbf[0]) ? strrchr(dbf, '/') : NULL;
@@ -501,7 +499,7 @@ static int resolve_model(sqlite3 *db, const char *id, int is_llama, char **out, 
             size_t n = strlen(id) + 200;
             *emsg = (char *)malloc(n);
             if (*emsg) snprintf(*emsg, n, "embedding_model '%s' is not a path and the database has no file; "
-                "use an absolute path or --model-directory=DIR", id);
+                "use an absolute path, --model-directory=DIR or $SEMQLITE_MODEL_DIRECTORY", id);
             return -1;
         }
         cands[nc++] = join_path(base, id, "");
@@ -845,7 +843,6 @@ done:
 int semqlite_register_embed(sqlite3 *db) {
     config_load_from_file(db);
     sqlite3_create_function(db, "SEMQLITE_SAVE", 0, SQLITE_UTF8, NULL, semqlite_save_func, NULL, NULL);
-    sqlite3_create_function(db, "SEMQLITE_SAVE", 1, SQLITE_UTF8, NULL, semqlite_save_func, NULL, NULL);
     sqlite3_create_function(db, "EMBED", 1, SQLITE_UTF8, NULL, embed_func, NULL, NULL);
     sqlite3_create_function(db, "SEMQLITE_SET", 2, SQLITE_UTF8, NULL, semqlite_set_func, NULL, NULL);
     sqlite3_create_function(db, "SEMQLITE_GET", 1, SQLITE_UTF8, NULL, semqlite_get_func, NULL, NULL);
