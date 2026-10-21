@@ -230,6 +230,66 @@ Measured examples (yours will differ if you use a different model):
 | `llama` | nomic-embed-text-v1.5 (768-dim) | ~0.49 | ~0.01 |
 | `onnx` | all-MiniLM-L6-v2 (384-dim) | ~0.94 | ~0.88 |
 
+#### `EMBED()` remembers its last input
+
+`EMBED()` keeps the result of its **last** call. When the next call asks for
+exactly the same text under exactly the same embedding settings — embedder,
+model (the *resolved* path, not just the id), dims, vector type, offset,
+skip-renorm — the stored blob is returned immediately, without loading the
+model or running the encoder. The settings are compared on every call, so a
+change invalidates the remembered result no matter how it was made:
+`SEMQLITE_SET(...)` or a plain `UPDATE temp.semqlite_config ...`. The API key
+is not part of the comparison (it never changes the vector). Two limits to
+know:
+
+- Replacing the model **file** in place, under the same path, is **not**
+  detected. Restart the process or change a setting to pick up new weights.
+- There is exactly **one** entry. Alternating between two texts
+  (`EMBED(a), EMBED(b), EMBED(a), ...`) recomputes every time — results stay
+  correct, there is just no speedup.
+
+This is what makes `... WHERE EMBEDDING_SIM(e, EMBED('query')) > 0.5` cheap:
+SQLite calls `EMBED()` once per row, but only the first call encodes — the
+rest are cache hits (see the measurements below).
+
+#### Computing an embedding once per query
+
+If you want SQLite itself to compute the query embedding only once for a
+whole scan — independent of the cache — put the `EMBED()` call in a
+materialized one-row CTE and compare against its column: SQLite runs the CTE
+body a single time before the scan, instead of re-evaluating the expression
+for every row of the scan.
+
+```sql
+WITH q(vec) AS MATERIALIZED (SELECT EMBED('input text for testing'))
+SELECT document_id, EMBEDDING_SIM(q.vec, embedding) AS sim
+FROM documents, q
+WHERE sim > 0.7
+ORDER BY sim DESC LIMIT 10;
+```
+
+The same holds for a scalar subquery,
+`WHERE EMBEDDING_SIM(e, (SELECT EMBED('...'))) > 0.7`: SQLite evaluates a
+subquery that references nothing from the outer query once, not per row.
+
+Measured on this machine (300-row table, `all-MiniLM-L6-v2`, wall time per
+fresh process, ~0.12 s of which is startup + model load + one encode). The
+"two texts" probe alternates `EMBED('hello world')` with
+`EMBED('goodbye world')` so the one-entry cache always misses — that is what
+exposes how many times SQLite actually calls `EMBED()`:
+
+| form | one text | two alternating texts |
+|---|---|---|
+| `EMBED()` directly in `WHERE` | 0.12 s | 4.3–4.6 s (per row: 600 encodes) |
+| `WITH ... AS MATERIALIZED` | 0.11 s | 0.12 s (once per query) |
+| scalar subquery `(SELECT EMBED(...))` | 0.11 s | 0.12 s (once per query) |
+| `WITH ...` without `MATERIALIZED` | 0.11 s | 0.12 s (measured once here; `MATERIALIZED` is the explicit guarantee) |
+
+With the last-input cache, none of this is necessary for a **constant** query
+text — the direct form runs at the same speed. The materialized form is still
+the guarantee when one query embeds more than one text, which the single-entry
+cache cannot cover.
+
 ## Opening Ragger's database
 
 Copy-paste this block to configure `semqlite` for Ragger's `memories.db`.

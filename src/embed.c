@@ -1,28 +1,31 @@
-// embed.c — EMBED(text) via either an ONNX model (default, matching Ragger's
-// pipeline exactly) or a GGUF model via libllama. Backend is selected by the
-// `embedding_embedder` config key ("onnx" or "llama").
-//
-// Config keys consulted by EMBED():
-//   embedding_embedder     — "onnx" (default) or "llama"
-//   embedding_model        — path to the model (ONNX: directory containing
-//                             model.onnx + tokenizer.json; llama: path to a
-//                             single .gguf file)
-//   embedding_dims         — target output dimension, 1..4096 (optional;
-//                             omit/0 to use the model's native n_embd).
-//                             Larger than native = zero-padded; smaller =
-//                             truncated (Matryoshka-style; not re-trained,
-//                             just a slice — fine for experimentation, not
-//                             claimed to preserve quality at all sizes).
-//   embedding_vector_type  — "f16" (default), "f32", "bf16", or "int8"
-//   embedding_offset       — byte offset prepended to the blob (default 0;
-//                             the offset bytes are zero-filled, allowing the
-//                             caller to reserve space for a header that an
-//                             external tool writes separately)
-//   embedding_skip_renorm  — "1"/"true"/"yes" to skip L2 normalization
-//
-// The model is loaded lazily on first EMBED() call and cached for the
-// process lifetime, keyed by path — calling SEMQLITE_SET('embedding_model', X)
-// with a different path swaps the cached model on the next EMBED() call.
+/**
+ * @file embed.c
+ * @brief EMBED(text) via either an ONNX model (default, matching Ragger's
+ * pipeline exactly) or a GGUF model via libllama. Backend is selected by the
+ * `embedding_embedder` config key ("onnx" or "llama").
+ *
+ * Config keys consulted by EMBED():
+ *   embedding_embedder     — "onnx" (default) or "llama"
+ *   embedding_model        — path to the model (ONNX: directory containing
+ *                             model.onnx + tokenizer.json; llama: path to a
+ *                             single .gguf file)
+ *   embedding_dims         — target output dimension, 1..4096 (optional;
+ *                             omit/0 to use the model's native n_embd).
+ *                             Larger than native = zero-padded; smaller =
+ *                             truncated (Matryoshka-style; not re-trained,
+ *                             just a slice — fine for experimentation, not
+ *                             claimed to preserve quality at all sizes).
+ *   embedding_vector_type  — "f16" (default), "f32", "bf16", or "int8"
+ *   embedding_offset       — byte offset prepended to the blob (default 0;
+ *                             the offset bytes are zero-filled, allowing the
+ *                             caller to reserve space for a header that an
+ *                             external tool writes separately)
+ *   embedding_skip_renorm  — "1"/"true"/"yes" to skip L2 normalization
+ *
+ * The model is loaded lazily on first EMBED() call and cached for the
+ * process lifetime, keyed by path — calling SEMQLITE_SET('embedding_model', X)
+ * with a different path swaps the cached model on the next EMBED() call.
+ */
 
 #include "embed.h"
 #include "embed_llama.h"
@@ -41,16 +44,16 @@
 #include <string.h>
 #include <sys/stat.h>
 
-/* ------------------------------------------------------------------ */
-/* semqlite_config — key/value store standing in for PRAGMAs.            */
-/*                                                                       */
-/* Live settings are kept in temp.semqlite_config (RAM / connection      */
-/* scoped); opening a database NEVER writes to it. If the database file  */
-/* already holds a main.semqlite_config (made by SEMQLITE_SAVE()), its   */
-/* rows are loaded into the temp table when the connection is set up.    */
-/* Every key has a default; a missing known key is created with its      */
-/* default on first read.                                                */
-/* ------------------------------------------------------------------ */
+/**
+ * @brief semqlite_config — key/value store standing in for PRAGMAs.
+ *
+ * Live settings are kept in temp.semqlite_config (RAM / connection
+ * scoped); opening a database NEVER writes to it. If the database file
+ * already holds a main.semqlite_config (made by SEMQLITE_SAVE()), its
+ * rows are loaded into the temp table when the connection is set up.
+ * Every key has a default; a missing known key is created with its
+ * default on first read.
+ */
 static const struct { const char *key; const char *def; } k_config_defaults[] = {
     { "embedding_embedder",     "onnx" },
     { "embedding_model",        ""     },   /* no sensible default: unset */
@@ -92,9 +95,14 @@ static void config_set(sqlite3 *db, const char *key, const char *value) {
     sqlite3_finalize(stmt);
 }
 
-// Reads a config value into a newly malloc'd string (caller frees). A known
-// key that is missing is created with its default and that default returned;
-// an unknown missing key returns NULL.
+/**
+ * @brief Reads a config value into a newly malloc'd string (caller frees).
+ *
+ * A known key that is missing is created with its default and that default
+ * returned; an unknown missing key returns NULL.
+ *
+ * Parameters are documented with the declaration in embed.h.
+ */
 char *semqlite_config_get(sqlite3 *db, const char *key) {
     ensure_config_table(db);
     sqlite3_stmt *stmt = NULL;
@@ -118,7 +126,11 @@ char *semqlite_config_get(sqlite3 *db, const char *key) {
 }
 #define config_get semqlite_config_get
 
-// Does main contain a table named semqlite_config?
+/**
+ * @brief Does main contain a table named semqlite_config?
+ * @param db Open connection.
+ * @return 1 if it exists, 0 otherwise.
+ */
 static int main_has_config(sqlite3 *db) {
     sqlite3_stmt *stmt = NULL;
     int has = 0;
@@ -131,9 +143,15 @@ static int main_has_config(sqlite3 *db) {
     return has;
 }
 
-// Connection setup: create the RAM table; if it is brand new and the file
-// carries a saved main.semqlite_config, load those rows as if SEMQLITE_SET
-// had been called for each. Never writes to main.
+/**
+ * @brief Connection setup: create the RAM table and load saved settings.
+ *
+ * If the table is brand new and the file carries a saved
+ * main.semqlite_config, load those rows as if SEMQLITE_SET had been called
+ * for each. Never writes to main.
+ *
+ * @param db Open connection.
+ */
 static void config_load_from_file(sqlite3 *db) {
     sqlite3_stmt *stmt = NULL;
     int exists = 0;
@@ -152,12 +170,20 @@ static void config_load_from_file(sqlite3 *db) {
     }
 }
 
-// SEMQLITE_SAVE([include_api_key]): persist current settings into
-// main.semqlite_config. Every known key is first materialised with its
-// default if missing, so the saved table is never empty. The API key is
-// saved only when include_api_key is true; otherwise it is never written and
-// any previously saved copy is removed from the file. Returns the number of
-// keys now in the saved table.
+/**
+ * @brief SEMQLITE_SAVE([include_api_key]): persist current settings into
+ * main.semqlite_config.
+ *
+ * Every known key is first materialised with its default if missing, so the
+ * saved table is never empty. The API key is saved only when include_api_key
+ * is true; otherwise it is never written and any previously saved copy is
+ * removed from the file.
+ *
+ * @param ctx  SQLite function context.
+ * @param argc 0 or 1.
+ * @param argv Optional include_api_key flag.
+ * @note The number of keys now in the saved table is returned via ctx.
+ */
 static void semqlite_save_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     sqlite3 *db = sqlite3_context_db_handle(ctx);
     int with_key = (argc >= 1 && sqlite3_value_type(argv[0]) != SQLITE_NULL &&
@@ -222,10 +248,11 @@ static void semqlite_get_func(sqlite3_context *ctx, int argc, sqlite3_value **ar
     free(val);
 }
 
-/* ------------------------------------------------------------------ */
-/* libllama model cache — one model loaded at a time, keyed by path.   */
-/* Not thread-safe; fine for a single-connection CLI shell.            */
-/* ------------------------------------------------------------------ */
+/**
+ * @brief libllama model cache — one model loaded at a time, keyed by path.
+ *
+ * Not thread-safe; fine for a single-connection CLI shell.
+ */
 typedef struct {
     char              *path;
     struct llama_model   *model;
@@ -252,7 +279,10 @@ void semqlite_llama_shutdown(void) {
     }
 }
 
+static void result_cache_clear(void);   /* defined with the EMBED() result cache below */
+
 void semqlite_embed_shutdown(void) {
+    result_cache_clear();
     semqlite_llama_shutdown();
 #ifdef SEMQLITE_HAVE_ONNX
     semqlite_onnx_shutdown();
@@ -303,9 +333,9 @@ int semqlite_llama_load(const char *path, const char **errmsg) {
     g_cache.ctx = lctx;
     g_cache.n_embd = llama_model_n_embd(model);
 
-    // atexit cleanup is registered centrally in embed_func() after
-    // any successful backend load — not here — so the LIFO ordering
-    // works for both llama-only and ONNX-only usage.
+    /* atexit cleanup is registered centrally in embed_func() after
+     * any successful backend load — not here — so the LIFO ordering
+     * works for both llama-only and ONNX-only usage. */
     return 0;
 }
 
@@ -356,8 +386,12 @@ int semqlite_llama_encode(const char *text, int text_len,
     return 0;
 }
 
-// Vector type identifiers — must match ext_functions.c's enum and
-// diskerror_vector_type in c_lib's EmbeddingCodecCapi.h.
+/**
+ * @brief Vector type identifiers.
+ *
+ * Must match ext_functions.c's enum and diskerror_vector_type in c_lib's
+ * EmbeddingCodecCapi.h.
+ */
 enum embed_vec_type { EVT_F32 = 0, EVT_F16 = 1, EVT_BF16 = 2, EVT_INT8 = 3 };
 
 static enum embed_vec_type parse_embed_vec_type(const char *s) {
@@ -372,9 +406,7 @@ static enum embed_vec_type parse_embed_vec_type(const char *s) {
     return EVT_F16;
 }
 
-/* ------------------------------------------------------------------ */
-/* Embedder backend identifiers                                        */
-/* ------------------------------------------------------------------ */
+/** @brief Embedder backend identifiers. */
 enum embed_backend { EB_ONNX = 0, EB_LLAMA = 1 };
 
 static enum embed_backend parse_backend(const char *s) {
@@ -390,15 +422,18 @@ static enum embed_backend parse_backend(const char *s) {
     return EB_ONNX;
 }
 
-/* ------------------------------------------------------------------ */
-/* EMBED(text) -> BLOB embedding, per semqlite_config settings           */
-/* ------------------------------------------------------------------ */
 
-/* Expand a leading "~/" or bare "~" to $HOME. Returns a newly malloc'd
- * string the caller must free. On any miss (no leading tilde, $HOME unset,
- * or allocation failure) returns a plain strdup of the input, so the caller
- * can always free() the result uniformly. A literal "~" not followed by '/'
- * (e.g. "~user") is left untouched — we don't resolve other users' homes. */
+/**
+ * @brief Expand a leading "~/" or bare "~" to $HOME.
+ *
+ * On any miss (no leading tilde, $HOME unset, or allocation failure)
+ * returns a plain strdup of the input, so the caller can always free() the
+ * result uniformly. A literal "~" not followed by '/' (e.g. "~user") is left
+ * untouched — we don't resolve other users' homes.
+ *
+ * @param path Path to expand; may be NULL.
+ * @return Newly malloc'd string the caller must free, or NULL if path is NULL.
+ */
 static char *expand_tilde(const char *path) {
     if (!path) return NULL;
     if (path[0] != '~' || (path[1] != '/' && path[1] != '\0'))
@@ -414,12 +449,6 @@ static char *expand_tilde(const char *path) {
     return out;
 }
 
-/* ------------------------------------------------------------------ */
-/* Model id -> path resolution                                          */
-/*   "/..." or "~..."  literal path                                      */
-/*   otherwise         <--model-directory>/<id>, else <dir of DB>/models/<id> */
-/*   llama also tries <id>.gguf. Exact names only — no globbing.         */
-/* ------------------------------------------------------------------ */
 static char *g_model_dir = NULL;
 
 void semqlite_set_model_directory(const char *dir) {
@@ -436,7 +465,21 @@ static char *join_path(const char *a, const char *b, const char *suffix) {
     return out;
 }
 
-// Returns 0 and *out (malloc'd) on success; -1 with *emsg (malloc'd) otherwise.
+/**
+ * @brief Model id -> path resolution.
+ *
+ *   - "/..." or "~..."  literal path
+ *   - otherwise         \<--model-directory\>/\<id\>, else \<dir of DB\>/models/\<id\>
+ *
+ * llama also tries \<id\>.gguf. Exact names only — no globbing.
+ *
+ * @param db       Open connection (used to find the main DB file's directory).
+ * @param id       Configured model id or path.
+ * @param is_llama Nonzero to also try \<id\>.gguf.
+ * @param out      On success, the resolved path (malloc'd).
+ * @param emsg     On failure, the error message (malloc'd).
+ * @return 0 on success; -1 with *emsg set otherwise.
+ */
 static int resolve_model(sqlite3 *db, const char *id, int is_llama, char **out, char **emsg) {
     char *cands[3] = {0}; int nc = 0;
     char *base = NULL;
@@ -487,6 +530,137 @@ static int resolve_model(sqlite3 *db, const char *id, int is_llama, char **out, 
     return -1;
 }
 
+/**
+ * @brief Single-entry EMBED() result cache.
+ *
+ * SQLite calls EMBED() once per row, so a query like
+ *   ... WHERE EMBEDDING_SIM(e, EMBED('some query')) > 0.5
+ * would otherwise recompute the same query vector for every row.
+ * Remember the last successful call; a full key match returns a copy
+ * of its blob without loading the model or running the encoder.
+ *
+ * The key is the input bytes (length + memcmp — deliberately NOT a
+ * hash: a collision would silently return the wrong embedding) plus
+ * every setting that can change the output: embedder, the RESOLVED
+ * model path (so a different --model-directory or DB models/ dir is a
+ * different key), dims, vector type, offset and skip-renorm. The API
+ * key is not part of the key (it does not change the vector).
+ * Settings can be changed by a plain UPDATE of temp.semqlite_config,
+ * so invalidation compares the current values on every call rather
+ * than hooking SEMQLITE_SET. Only one entry: alternating two inputs
+ * is always a miss (documented limitation).
+ * Not thread-safe; fine for a single-connection CLI shell.
+ */
+typedef struct {
+    int       valid;
+    char     *text;         /* exact input bytes (may contain NUL) */
+    size_t    text_len;
+    char     *embedder;
+    char     *model;        /* resolved model path; "" when unset */
+    char     *dims;
+    char     *vtype;
+    char     *offset;
+    char     *skip_renorm;
+    uint8_t  *blob;
+    size_t    blob_len;
+} embed_result_entry;
+
+static embed_result_entry g_result = {0};
+
+static void result_cache_clear(void) {
+    free(g_result.text);
+    free(g_result.embedder);
+    free(g_result.model);
+    free(g_result.dims);
+    free(g_result.vtype);
+    free(g_result.offset);
+    free(g_result.skip_renorm);
+    free(g_result.blob);
+    memset(&g_result, 0, sizeof g_result);
+}
+
+/**
+ * @brief Compare a cached key string against the current one.
+ *
+ * NULL (unset model) is treated as "". Exact strcmp: "onnx" vs "ONNX" is
+ * simply a different key — a miss is harmless.
+ *
+ * @param cached  Stored key string (never NULL).
+ * @param current Current key string; may be NULL.
+ * @return 1 if equal, 0 otherwise.
+ */
+static int key_str_eq(const char *cached, const char *current) {
+    return strcmp(cached, current ? current : "") == 0;
+}
+
+static int result_cache_matches(const char *text, int text_len,
+                                const char *embedder, const char *model,
+                                const char *dims, const char *vtype,
+                                const char *offset, const char *skip_renorm) {
+    if (!g_result.valid || !text) return 0;
+    if ((size_t)text_len != g_result.text_len) return 0;
+    if (g_result.text_len && memcmp(g_result.text, text, g_result.text_len) != 0) return 0;
+    return key_str_eq(g_result.embedder, embedder)
+        && key_str_eq(g_result.model, model)
+        && key_str_eq(g_result.dims, dims)
+        && key_str_eq(g_result.vtype, vtype)
+        && key_str_eq(g_result.offset, offset)
+        && key_str_eq(g_result.skip_renorm, skip_renorm);
+}
+
+/**
+ * @brief Replace the cached entry with a fresh copy of key + blob.
+ *
+ * Call only after a fully successful encode. On allocation failure the
+ * cache is left empty rather than half-filled; the caller's result is
+ * unaffected.
+ *
+ * @param text,text_len                                 Input bytes.
+ * @param embedder,model,dims,vtype,offset,skip_renorm  Key strings.
+ * @param blob,blob_len                                 Result to remember.
+ */
+static void result_cache_store(const char *text, int text_len,
+                               const char *embedder, const char *model,
+                               const char *dims, const char *vtype,
+                               const char *offset, const char *skip_renorm,
+                               const uint8_t *blob, int blob_len) {
+    result_cache_clear();
+    if (!text || blob_len <= 0) return;
+    g_result.text = (char *)malloc((size_t)text_len + 1);
+    if (g_result.text) {
+        memcpy(g_result.text, text, (size_t)text_len);
+        g_result.text[text_len] = '\0';
+    }
+    g_result.text_len = (size_t)text_len;
+    g_result.embedder    = strdup(embedder    ? embedder    : "");
+    g_result.model       = strdup(model       ? model       : "");
+    g_result.dims        = strdup(dims        ? dims        : "");
+    g_result.vtype       = strdup(vtype       ? vtype       : "");
+    g_result.offset      = strdup(offset      ? offset      : "");
+    g_result.skip_renorm = strdup(skip_renorm ? skip_renorm : "");
+    g_result.blob = (uint8_t *)malloc((size_t)blob_len);
+    if (g_result.blob) {
+        memcpy(g_result.blob, blob, (size_t)blob_len);
+        g_result.blob_len = (size_t)blob_len;
+    }
+    g_result.valid = g_result.text && g_result.embedder && g_result.model &&
+                     g_result.dims && g_result.vtype && g_result.offset &&
+                     g_result.skip_renorm && g_result.blob;
+    if (!g_result.valid) result_cache_clear();
+}
+
+/**
+ * @brief EMBED(text) -> BLOB embedding, per semqlite_config settings.
+ *
+ * Returns NULL for NULL input (never cached). Otherwise reads the config,
+ * resolves the model path, and returns the cached blob on a full key match;
+ * on a miss it loads the model, encodes, and stores the result.
+ *
+ * @param ctx  SQLite function context.
+ * @param argc 1.
+ * @param argv The text to embed.
+ * @note The blob, NULL, or an error is returned via ctx.
+ */
 static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (argc < 1 || sqlite3_value_type(argv[0]) == SQLITE_NULL) {
         sqlite3_result_null(ctx);
@@ -508,21 +682,29 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     char *skip_renorm_str = config_get(db, "embedding_skip_renorm");
 
     enum embed_backend backend = parse_backend(embedder_str);
-    free(embedder_str);
 
-    // Resolve the configured model id to a path and fail early, listing every
-    // path tried, if it doesn't exist.
+    /* Resolve the configured model id to a path and fail early, listing every
+     * path tried, if it doesn't exist. The cache key uses the RESOLVED path,
+     * so a different --model-directory (or a different DB whose models/ dir
+     * resolves the same id elsewhere) is a different key. An error here is
+     * simply an error: the cache is neither consulted nor changed. */
     if (model_path) {
         char *resolved = NULL, *emsg = NULL;
         if (resolve_model(db, model_path, backend == EB_LLAMA, &resolved, &emsg) != 0) {
             sqlite3_result_error(ctx, emsg ? emsg : "embedding_model not found", -1);
             free(emsg);
-            free(model_path); free(dims_str); free(vtype_str);
-            free(offset_str); free(skip_renorm_str);
-            return;
+            goto done;
         }
         free(model_path);
         model_path = resolved;
+    }
+
+    /* Cache hit: return a COPY of the last call's blob (SQLite must never
+     * own or free the cached bytes) without loading the model or encoding. */
+    if (result_cache_matches(text, text_len, embedder_str, model_path,
+                             dims_str, vtype_str, offset_str, skip_renorm_str)) {
+        sqlite3_result_blob(ctx, g_result.blob, (int)g_result.blob_len, SQLITE_TRANSIENT);
+        goto done;
     }
 
     // Load the model via the selected backend.
@@ -542,17 +724,14 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (load_rc != 0) {
         if (!errmsg) errmsg = "failed to load embedding model";
         sqlite3_result_error(ctx, errmsg, -1);
-        free(model_path); free(dims_str); free(vtype_str);
-        free(offset_str); free(skip_renorm_str);
-        return;
+        goto done;
     }
-    free(model_path);
 
-    // Ensure cleanup runs at exit for whichever backend(s) were loaded.
-    // Must be registered AFTER any llama model load (atexit LIFO ordering
-    // vs ggml's Metal cleanup — see the comment in semqlite_llama_load).
-    // For ONNX-only usage, the llama backend was never touched so there's
-    // no ggml ordering constraint, but we still need to free the ONNX env.
+    /* Ensure cleanup runs at exit for whichever backend(s) were loaded.
+     * Must be registered AFTER any llama model load (atexit LIFO ordering
+     * vs ggml's Metal cleanup — see the comment in semqlite_llama_load).
+     * For ONNX-only usage, the llama backend was never touched so there's
+     * no ggml ordering constraint, but we still need to free the ONNX env. */
     {
         static int atexit_registered = 0;
         if (!atexit_registered) {
@@ -567,28 +746,24 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
         if (target_dims < 0) target_dims = 0;
         if (target_dims > 4096) target_dims = 4096;
     }
-    free(dims_str);
 
     enum embed_vec_type vtype = parse_embed_vec_type(vtype_str);
-    free(vtype_str);
 
     int blob_offset = 0;
     if (offset_str && offset_str[0]) {
         blob_offset = atoi(offset_str);
         if (blob_offset < 0) blob_offset = 0;
     }
-    free(offset_str);
 
     int skip_renorm = 0;
     if (skip_renorm_str) {
         skip_renorm = (skip_renorm_str[0] == '1' ||
                        skip_renorm_str[0] == 't' || skip_renorm_str[0] == 'T' ||
                        skip_renorm_str[0] == 'y' || skip_renorm_str[0] == 'Y');
-        free(skip_renorm_str);
     }
 
-    // Encode via the selected backend. The backend returns a normalized f32
-    // vector (both backends L2-normalize internally).
+    /* Encode via the selected backend. The backend returns a normalized f32
+     * vector (both backends L2-normalize internally). */
     float *raw_emb = NULL;
     int raw_dims = 0;
     int enc_rc;
@@ -606,22 +781,22 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     if (enc_rc != 0 || !raw_emb) {
         free(raw_emb);
         sqlite3_result_error(ctx, "embedding encode failed", -1);
-        return;
+        goto done;
     }
 
     int out_dims = target_dims > 0 ? target_dims : raw_dims;
 
-    // Build the f32 working copy with optional re-normalization skip,
-    // dim truncation/zero-padding.
+    /* Build the f32 working copy with optional re-normalization skip,
+     * dim truncation/zero-padding. */
     float *normed = (float *)malloc(sizeof(float) * (size_t)out_dims);
-    if (!normed) { free(raw_emb); sqlite3_result_error_nomem(ctx); return; }
+    if (!normed) { free(raw_emb); sqlite3_result_error_nomem(ctx); goto done; }
 
     if (skip_renorm) {
         for (int i = 0; i < out_dims; i++)
             normed[i] = (i < raw_dims) ? raw_emb[i] : 0.0f;
     } else {
-        // Re-normalize after any dim truncation (truncating a unit vector
-        // doesn't leave it unit-norm).
+        /* Re-normalize after any dim truncation (truncating a unit vector
+         * doesn't leave it unit-norm). */
         for (int i = 0; i < out_dims; i++)
             normed[i] = (i < raw_dims) ? raw_emb[i] : 0.0f;
         if (out_dims != raw_dims) {
@@ -636,19 +811,37 @@ static void embed_func(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     }
     free(raw_emb);
 
-    // Encode into the on-disk blob (offset header + dtype-formatted
-    // payload) via c_lib's EmbeddingCodec, through the C bridge.
+    /* Encode into the on-disk blob (offset header + dtype-formatted
+     * payload) via c_lib's EmbeddingCodec, through the C bridge. */
     int total = 0;
     uint8_t *blob = diskerror_embedding_encode((int)vtype, blob_offset,
                                                normed, out_dims, &total);
     free(normed);
-    if (!blob) { sqlite3_result_error_nomem(ctx); return; }
+    if (!blob) { sqlite3_result_error_nomem(ctx); goto done; }
 
     sqlite3_result_blob(ctx, blob, total, SQLITE_TRANSIENT);
+
+    /* Cache only fully successful results; every error path above leaves
+     * the previous entry untouched. */
+    result_cache_store(text, text_len, embedder_str, model_path, dims_str,
+                       vtype_str, offset_str, skip_renorm_str, blob, total);
     free(blob);
+
+done:
+    free(embedder_str);
+    free(model_path);
+    free(dims_str);
+    free(vtype_str);
+    free(offset_str);
+    free(skip_renorm_str);
 }
 
-/* ------------------------------------------------------------------ */
+/**
+ * @brief Register EMBED, SEMQLITE_SET/GET/SAVE on a connection and load any
+ * saved settings from the file.
+ *
+ * Parameters are documented with the declaration in embed.h.
+ */
 int semqlite_register_embed(sqlite3 *db) {
     config_load_from_file(db);
     sqlite3_create_function(db, "SEMQLITE_SAVE", 0, SQLITE_UTF8, NULL, semqlite_save_func, NULL, NULL);
@@ -656,8 +849,8 @@ int semqlite_register_embed(sqlite3 *db) {
     sqlite3_create_function(db, "EMBED", 1, SQLITE_UTF8, NULL, embed_func, NULL, NULL);
     sqlite3_create_function(db, "SEMQLITE_SET", 2, SQLITE_UTF8, NULL, semqlite_set_func, NULL, NULL);
     sqlite3_create_function(db, "SEMQLITE_GET", 1, SQLITE_UTF8, NULL, semqlite_get_func, NULL, NULL);
-    // Cleanup is registered lazily in ensure_model_loaded(), after the
-    // first model load — see the comment there for why atexit ORDER
-    // matters here (must run before ggml's own Metal-backend cleanup).
+    /* Cleanup is registered lazily in ensure_model_loaded(), after the
+     * first model load — see the comment there for why atexit ORDER
+     * matters here (must run before ggml's own Metal-backend cleanup). */
     return SQLITE_OK;
 }
