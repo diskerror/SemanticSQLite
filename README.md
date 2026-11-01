@@ -118,7 +118,7 @@ their behavior depends on the mutable `semqlite_config` settings. Same blob
 inputs with a different `embedding_vector_type` produce different results.
 
 ```sql
--- Configure for Ragger's default: f16 blobs with 1-byte version prefix
+-- Configure for a blob with a 1-byte header (an older Ragger layout), f16 payload
 SELECT SEMQLITE_SET('embedding_vector_type', 'f16');
 SELECT SEMQLITE_SET('embedding_offset', '1');
 
@@ -299,30 +299,29 @@ cache cannot cover.
 
 ## Opening Ragger's database
 
-Copy-paste this block to configure `semqlite` for Ragger's `memories.db`.
-It reads all embedding settings directly from Ragger's `settings` table — no
-hardcoded values to keep in sync:
+Ragger 0.17 and later keeps a `semqlite_config` table in `memories.db` that
+records how the stored vectors were made (`embedding_embedder`,
+`embedding_model`, `embedding_dims`, `embedding_vector_type`,
+`embedding_offset`). `semqlite` loads that table when it opens the file, so
+`EMBED()`, `EMBEDDING_SIM()` and `EMBEDDING_DIST()` work against Ragger's live
+data with no setup:
 
 ```sql
 .open ~/.ragger/memories.db
-
--- Load embedding config from Ragger's settings table.
--- vector_type: f16 (default), f32, bf16, or int8
--- model:       resolved model directory name
--- dimensions:  384 for all-MiniLM-L12-v2, etc.
--- offset:      default 0; int8 scale is a 2-byte f16 suffix
---              after the payload, matching SemanticSQLite's convention.
-SELECT SEMQLITE_SET('embedding_vector_type',
-    (SELECT value FROM settings WHERE key = 'vector_type'));
-SELECT SEMQLITE_SET('embedding_dims',
-    (SELECT value FROM settings WHERE key = 'dimensions'));
-SELECT SEMQLITE_SET('embedding_model',
-    '~/.ragger/models/' || (SELECT value FROM settings WHERE key = 'embedding_model'));
-SELECT SEMQLITE_SET('embedding_offset', '1');
+SELECT EMBEDDING_SIM(EMBED('some text'), embedding) FROM turns LIMIT 5;
 ```
 
-After this, `EMBEDDING_SIM()`, `EMBEDDING_DIST()`, and `EMBED()` all work
-against Ragger's live data with no further configuration.
+A model id is resolved under `models/` next to the database file, which is
+where Ragger keeps its models (`~/.ragger/models`).
+
+Ragger writes that table; `semqlite` only reads it. Editing `semqlite_config`
+or Ragger's `settings` by hand bypasses Ragger's consistency checks, and
+`SEMQLITE_SAVE()` on a Ragger database is only for people who know what they
+are doing. Settings you change with `SEMQLITE_SET` affect your session only.
+
+Older Ragger databases (before 0.17) keep these facts in the `settings` table
+(`embedding_model`, `vector_type`, `dimensions`); set the matching
+`SEMQLITE_SET` values yourself.
 
 ## Build
 
