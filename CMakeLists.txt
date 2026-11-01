@@ -280,9 +280,8 @@ target_include_directories(semqlite_ext PUBLIC
 target_include_directories(semqlite_ext PRIVATE "${LLAMA_INCLUDE_DIR}" "${GGML_INCLUDE_DIR}" ${SEMQLITE_ONNX_INCLUDES})
 target_link_libraries(semqlite_ext PUBLIC
     diskerror_sqlite3
-    diskerror_double_metaphone
+    diskerror_search
     diskerror_embedding_codec
-    diskerror_stemmer_capi
     "${LLAMA_LIBRARY}"
     ${SEMQLITE_ONNX_LIBS}
 )
