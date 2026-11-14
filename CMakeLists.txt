@@ -164,6 +164,35 @@ endif()
 message(STATUS "libllama: ${LLAMA_LIBRARY} (headers: ${LLAMA_INCLUDE_DIR})")
 get_filename_component(LLAMA_LIBRARY_DIR "${LLAMA_LIBRARY}" DIRECTORY)
 
+# libllama is NOT linked: src/llama_loader.c dlopen()s it on the first EMBED(),
+# so a llama.cpp upgrade (new soname) gives a clear SQL error instead of the
+# dynamic linker aborting the whole process at start-up. The loader must open
+# the same generation the headers describe, so record the library's own
+# soname/install name here (the unversioned libllama.dylib/.so symlink would
+# silently follow upgrades, which is exactly what must not happen).
+set(LLAMA_SONAME "")
+if(APPLE)
+    execute_process(COMMAND otool -D "${LLAMA_LIBRARY}"
+        OUTPUT_VARIABLE _otool_out RESULT_VARIABLE _otool_rc ERROR_QUIET)
+    if(_otool_rc EQUAL 0)
+        string(REGEX MATCH "[^\n]*\.dylib[ \n]*$" _install_name "${_otool_out}")
+        string(STRIP "${_install_name}" _install_name)
+        get_filename_component(LLAMA_SONAME "${_install_name}" NAME)
+    endif()
+else()
+    execute_process(COMMAND readelf -d "${LLAMA_LIBRARY}"
+        OUTPUT_VARIABLE _readelf_out RESULT_VARIABLE _readelf_rc ERROR_QUIET)
+    if(_readelf_rc EQUAL 0)
+        string(REGEX MATCH "SONAME[^\[]*\\[([^]]+)\\]" _m "${_readelf_out}")
+        set(LLAMA_SONAME "${CMAKE_MATCH_1}")
+    endif()
+endif()
+if(NOT LLAMA_SONAME)
+    get_filename_component(LLAMA_SONAME "${LLAMA_LIBRARY}" NAME)
+    message(WARNING "libllama soname not detected; using ${LLAMA_SONAME}")
+endif()
+message(STATUS "libllama soname: ${LLAMA_SONAME} (dlopen'd lazily from ${LLAMA_LIBRARY_DIR})")
+
 # llama.h #includes "ggml.h", which in an un-installed in-tree llama.cpp
 # build lives in a SEPARATE directory (ggml/include, a sibling of the repo
 # root, not under LLAMA_INCLUDE_DIR) — only a `cmake --install`ed tree
@@ -272,17 +301,21 @@ endif()
 add_library(semqlite_ext STATIC
     src/ext_functions.c
     src/embed.c
+    src/llama_loader.c
     ${SEMQLITE_ONNX_SOURCES}
 )
 target_include_directories(semqlite_ext PUBLIC
     "${CMAKE_SOURCE_DIR}/include"
 )
 target_include_directories(semqlite_ext PRIVATE "${LLAMA_INCLUDE_DIR}" "${GGML_INCLUDE_DIR}" ${SEMQLITE_ONNX_INCLUDES})
+target_compile_definitions(semqlite_ext PRIVATE
+    SEMQLITE_LLAMA_SONAME="${LLAMA_SONAME}"
+    SEMQLITE_LLAMA_LIBDIR="${LLAMA_LIBRARY_DIR}")
 target_link_libraries(semqlite_ext PUBLIC
     diskerror_sqlite3
     diskerror_search
     diskerror_embedding_codec
-    "${LLAMA_LIBRARY}"
+    ${CMAKE_DL_LIBS}
     ${SEMQLITE_ONNX_LIBS}
 )
 if(SEMQLITE_ONNX)
@@ -338,3 +371,10 @@ set_target_properties(semqlite PROPERTIES
 # ---------------------------------------------------------------------------
 set(CMAKE_INSTALL_PREFIX "/usr/local" CACHE PATH "Install prefix" FORCE)
 install(TARGETS semqlite RUNTIME DESTINATION bin)
+
+# ---------------------------------------------------------------------------
+# Tests: lazy libllama loading (a missing/wrong library must only affect EMBED())
+# ---------------------------------------------------------------------------
+enable_testing()
+add_test(NAME llama_loader
+         COMMAND sh "${CMAKE_SOURCE_DIR}/tests/test_llama_loader.sh" $<TARGET_FILE:semqlite>)

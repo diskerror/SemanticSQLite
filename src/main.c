@@ -33,6 +33,7 @@
 #include <sqlite3.h>
 #include <stdlib.h>
 #include "embed.h"
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -50,6 +51,11 @@ static void print_semqlite_version(int include_sqlite_version) {
     }
     printf("  Custom functions: DMPHON, EMBEDDING_SIM, EMBEDDING_DIST, "
            "EMBED, SEMQLITE_SET, SEMQLITE_GET, STEM_PORTER, STEM_SNOWBALL\n");
+    {
+        char note[1536];
+        (void)semqlite_llama_probe(note, sizeof note);
+        printf("  %s\n", note);
+    }
     printf("  Embedding backends:"
 #ifdef SEMQLITE_HAVE_ONNX
            " onnx (default),"
@@ -71,6 +77,13 @@ int main(int argc, char **argv) {
         }
         argc = w;
         argv[argc] = NULL;
+    }
+    /* libllama is loaded lazily (see llama_loader.h), so a changed install
+     * does not stop the shell; tell an interactive user once, up front. */
+    if (isatty(0) && isatty(2)) {
+        char note[1536];
+        if (semqlite_llama_probe(note, sizeof note) != 0)
+            fprintf(stderr, "semqlite: warning: %s\n", note);
     }
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-version") == 0 || strcmp(argv[i], "--version") == 0) {
