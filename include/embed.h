@@ -12,6 +12,7 @@
 #pragma once
 
 #include <sqlite3.h>
+#include <stddef.h>
 
 /**
  * @brief Registers EMBED(text), SEMQLITE_SET(key, value), SEMQLITE_GET(key)
@@ -54,3 +55,13 @@ void semqlite_embed_shutdown(void);
  * @param dir Directory; NULL or "" restores the default (\<DB dir\>/models).
  */
 void semqlite_set_model_directory(const char *dir);
+
+/**
+ * @brief Cheap check that the libllama this build expects is installed
+ * (file exists; does not load it). Implemented in llama_loader.c.
+ *
+ * @param buf Receives a status line (OK, or what is wrong and the fix).
+ * @param n   Size of buf.
+ * @return 0 if the library file exists, -1 otherwise.
+ */
+int semqlite_llama_probe(char *buf, size_t n);

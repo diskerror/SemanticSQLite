@@ -29,6 +29,7 @@
 
 #include "embed.h"
 #include "embed_llama.h"
+#include "llama_loader.h"
 #ifdef SEMQLITE_HAVE_ONNX
 #include "embed_onnx.h"
 #endif
@@ -257,10 +258,12 @@ typedef struct {
 
 static embed_model_cache g_cache = {0};
 static int g_backend_initialized = 0;
+/** @brief Resolved libllama entry points; NULL until semqlite_llama_bind() succeeds. */
+static const semqlite_llama_api *g_ll = NULL;
 
 static void unload_cached_model(void) {
-    if (g_cache.ctx)   { llama_free(g_cache.ctx);        g_cache.ctx = NULL; }
-    if (g_cache.model) { llama_model_free(g_cache.model); g_cache.model = NULL; }
+    if (g_cache.ctx)   { g_ll->free_context(g_cache.ctx); g_cache.ctx = NULL; }
+    if (g_cache.model) { g_ll->model_free(g_cache.model); g_cache.model = NULL; }
     free(g_cache.path);
     g_cache.path = NULL;
     g_cache.n_embd = 0;
@@ -269,7 +272,7 @@ static void unload_cached_model(void) {
 void semqlite_llama_shutdown(void) {
     unload_cached_model();
     if (g_backend_initialized) {
-        llama_backend_free();
+        g_ll->backend_free();
         g_backend_initialized = 0;
     }
 }
@@ -294,29 +297,35 @@ int semqlite_llama_load(const char *path, const char **errmsg) {
         return 0;  // already loaded
     }
 
+    /* Open libllama now (first use); failure becomes the SQL error. */
+    if (!g_ll && semqlite_llama_bind(&g_ll, errmsg) != 0) {
+        g_ll = NULL;
+        return -1;
+    }
+
     unload_cached_model();
 
     if (!g_backend_initialized) {
-        llama_backend_init();
+        g_ll->backend_init();
         g_backend_initialized = 1;
     }
 
-    struct llama_model_params mparams = llama_model_default_params();
-    struct llama_model *model = llama_model_load_from_file(path, mparams);
+    struct llama_model_params mparams = g_ll->model_default_params();
+    struct llama_model *model = g_ll->model_load_from_file(path, mparams);
     if (!model) {
         *errmsg = "failed to load GGUF model (bad path or unsupported file)";
         return -1;
     }
 
-    struct llama_context_params cparams = llama_context_default_params();
+    struct llama_context_params cparams = g_ll->context_default_params();
     cparams.embeddings = true;
     cparams.pooling_type = LLAMA_POOLING_TYPE_MEAN;
     cparams.n_ubatch = 2048;
     cparams.n_batch  = 2048;
 
-    struct llama_context *lctx = llama_init_from_model(model, cparams);
+    struct llama_context *lctx = g_ll->init_from_model(model, cparams);
     if (!lctx) {
-        llama_model_free(model);
+        g_ll->model_free(model);
         *errmsg = "failed to create llama_context for model";
         return -1;
     }
@@ -326,7 +335,7 @@ int semqlite_llama_load(const char *path, const char **errmsg) {
     if (g_cache.path) memcpy(g_cache.path, path, path_len + 1);
     g_cache.model = model;
     g_cache.ctx = lctx;
-    g_cache.n_embd = llama_model_n_embd(model);
+    g_cache.n_embd = g_ll->model_n_embd(model);
 
     /* atexit cleanup is registered centrally in embed_func() after
      * any successful backend load — not here — so the LIFO ordering
@@ -340,31 +349,31 @@ int semqlite_llama_encode(const char *text, int text_len,
     *out_dims = 0;
     if (!g_cache.model || !g_cache.ctx) return -1;
 
-    const struct llama_vocab *vocab = llama_model_get_vocab(g_cache.model);
+    const struct llama_vocab *vocab = g_ll->model_get_vocab(g_cache.model);
     int n_embd = g_cache.n_embd;
 
     int n_tokens_max = text_len + 8;
     llama_token *tokens = (llama_token *)malloc(sizeof(llama_token) * (size_t)n_tokens_max);
     if (!tokens) return -1;
 
-    int n_tokens = llama_tokenize(vocab, text, text_len, tokens, n_tokens_max, true, true);
+    int n_tokens = g_ll->tokenize(vocab, text, text_len, tokens, n_tokens_max, true, true);
     if (n_tokens < 0) {
         n_tokens_max = -n_tokens + 8;
         llama_token *retry = (llama_token *)realloc(tokens, sizeof(llama_token) * (size_t)n_tokens_max);
         if (!retry) { free(tokens); return -1; }
         tokens = retry;
-        n_tokens = llama_tokenize(vocab, text, text_len, tokens, n_tokens_max, true, true);
+        n_tokens = g_ll->tokenize(vocab, text, text_len, tokens, n_tokens_max, true, true);
     }
     if (n_tokens <= 0) { free(tokens); return -1; }
 
-    llama_memory_clear(llama_get_memory(g_cache.ctx), true);
-    struct llama_batch batch = llama_batch_get_one(tokens, n_tokens);
-    int rc = llama_decode(g_cache.ctx, batch);
+    g_ll->memory_clear(g_ll->get_memory(g_cache.ctx), true);
+    struct llama_batch batch = g_ll->batch_get_one(tokens, n_tokens);
+    int rc = g_ll->decode(g_cache.ctx, batch);
     free(tokens);
     if (rc != 0) return -1;
 
-    const float *embd = llama_get_embeddings_seq(g_cache.ctx, 0);
-    if (!embd) embd = llama_get_embeddings_ith(g_cache.ctx, 0);
+    const float *embd = g_ll->get_embeddings_seq(g_cache.ctx, 0);
+    if (!embd) embd = g_ll->get_embeddings_ith(g_cache.ctx, 0);
     if (!embd) return -1;
 
     // L2-normalize (matches Ragger's convention).

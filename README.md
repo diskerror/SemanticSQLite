@@ -141,8 +141,10 @@ ORDER BY sim DESC LIMIT 10;
 
 ### `EMBED(text)`
 Generates a sentence embedding via a GGUF model, loaded through **libllama**
-(MacPorts `llama.cpp` package). Mean-pooled, L2-normalized, returned as a
-BLOB — same shape as embeddings already stored in Ragger's DB.
+(MacPorts `llama.cpp` package; **dynamically loaded**, see
+[Dynamically linked libraries](#dynamically-linked-libraries)). Mean-pooled,
+L2-normalized, returned as a BLOB — same shape as embeddings already stored in
+Ragger's DB.
 
 SQLite extensions can't actually define new `PRAGMA`s (the syntax is
 hardcoded into the core parser, not an extension point like functions/vtabs
@@ -333,9 +335,27 @@ Older Ragger databases (before 0.17) keep these facts in the `settings` table
 | C11 + C++20 compiler | everything | GCC 14 / Clang tested |
 | `git` | everything | CMake clones the dependencies below (pinned) at configure time |
 | **Rust toolchain (`cargo`)** | `-DSEMQLITE_ONNX=ON` (default) | `tokenizers-cpp`'s HuggingFace backend is a Rust crate built via `cargo build`, invoked automatically by CMake. **Not optional** unless you build with `-DSEMQLITE_ONNX=OFF`. See install command below. |
-| `libllama` (llama.cpp) | `embedding_embedder='llama'` | MacPorts on macOS, build-from-source on Linux — see below. Not needed for the ONNX backend, but the CMake always looks for it (both backends can coexist in one binary). |
+| `libllama` (llama.cpp) | `embedding_embedder='llama'` | MacPorts on macOS, build-from-source on Linux — see below. Not needed for the ONNX backend, but the CMake always looks for it (both backends can coexist in one binary). Loaded at run time, not linked: see [Dynamically linked libraries](#dynamically-linked-libraries). |
 | Internet access (first build only) | everything | Dependencies are fetched from GitHub at configure time and cached under `build/_deps/`: c_lib (unless a sibling `../c_lib` exists), plus with `-DSEMQLITE_ONNX=ON` (default) `tokenizers-cpp` (git, pinned commit) and ONNX Runtime (release archive, SHA-256 verified). Versions are pinned in `cmake/pins.cmake`. |
 | `libedit` (optional) | interactive shell usage | Gives the shell arrow-key/history line editing. Without it, arrow keys print raw escape sequences and there's no command history — the shell still works, it's just unpleasant to use interactively. macOS (MacPorts): `sudo port install libedit`. Debian/Linux: `sudo apt install libedit-dev`. Auto-detected; silently skipped if not found. |
+
+### Dynamically linked libraries
+
+`semqlite` does not contain these libraries; it uses the copies installed on
+the machine, so upgrading them can break a binary built earlier. They are
+loaded in two different ways:
+
+| Library | How it is loaded | If it is missing or a different version |
+|---|---|---|
+| `libllama` (llama.cpp) and the `libggml*` libraries it depends on | **Lazily, with `dlopen`, on the first `EMBED()` that uses the `llama` backend.** The build records the exact soname it was made against (e.g. `libllama.1.dylib`) and opens only that. A newer or older major version is never substituted, because llama.cpp has no stable ABI. | The shell and every other function keep working. `EMBED()` returns an SQL error naming the library it wanted, the `libllama*` files actually installed next to it, and the fix. An interactive shell prints the same message as a warning at start-up, and `semqlite -version` shows the status line. |
+| `libonnxruntime` (ONNX backend) | **At process start (normal dynamic link).** The binary's `RPATH` points at the directory the build downloaded it into (`build/_deps/onnxruntime/.../lib`). | The process fails to start with a `dyld`/loader error and no semqlite message. Moving or deleting the build directory breaks the installed binary. |
+| `libedit` (optional) | At process start, if found at build time. | Same as ONNX Runtime. |
+
+After upgrading llama.cpp (MacPorts `port upgrade`, Homebrew, or a source
+build), **rebuild and reinstall semqlite**: re-run CMake (it re-detects the
+soname) and `make`. To point at a specific library file without rebuilding
+(testing, unusual installs), set `SEMQLITE_LLAMA_LIB=/path/to/libllama.N.dylib`;
+it must still be the llama.cpp generation the binary was built against.
 
 If a requirement is missing, CMake usually fails at build time with an
 opaque error rather than a clean message at configure time (e.g. missing
@@ -447,6 +467,6 @@ SQLite itself is public domain. `DMPHON`/Double Metaphone is a published,
 widely-implemented public algorithm. `STEM_PORTER` is the classic public-domain
 1980 Porter algorithm. `STEM_SNOWBALL` links the vendored Snowball
 `libstemmer_c` (BSD-3-Clause, [snowballstem.org](https://snowballstem.org)).
-`EMBED()` links libllama (MIT license). This project's own code (the
+`EMBED()` loads libllama (MIT license) at run time; it is not linked into the binary. This project's own code (the
 `EMBEDDING_SIM`/`EMBEDDING_DIST`/`EMBED` implementations, the shell-integration
 glue) is released with no restrictions — do whatever you want with it.
